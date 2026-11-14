@@ -15,7 +15,7 @@ export default function HomeScreen() {
   const recent = useHistory().slice(0, 3);
 
   return (
-    <Screen header={<AppHeader title="NFC" />} gap={space.lg}>
+    <Screen header={<AppHeader title="NFC Doctor" />} gap={space.lg}>
       <Text style={[type.display, { color: t.ink }]} accessibilityRole="header">
         Your NFC toolkit
       </Text>

@@ -1,4 +1,4 @@
-# NFC Read Write
+# NFC Doctor
 
 [![Latest release](https://img.shields.io/github/v/release/kanishak11-cyber/nfc-reader-write)](https://github.com/kanishak11-cyber/nfc-reader-write/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)

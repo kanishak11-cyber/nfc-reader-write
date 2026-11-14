@@ -1,4 +1,4 @@
-"""Draws the TapClay app icon set: a white clay NFC tag, violet waves and a pen nib on lavender.
+"""Draws the NFC Doctor app icon set: a white clay NFC tag, violet waves and a medical-cross badge on lavender.
 
 usage: make_icons.py <font.ttf> <out_dir>
 """
@@ -88,26 +88,21 @@ def arcs_mask():
     return m
 
 
-def nib_masks():
-    """Pen nib pointing down-left, hanging under the end of the outer wave."""
-    size = 220
-    body = Image.new('L', (P(size), P(size)), 0)
-    cut = Image.new('L', (P(size), P(size)), 0)
-    d = ImageDraw.Draw(body)
-    # Drawn pointing straight down, then rotated.
-    pts = [(110, 208), (52, 96), (70, 30), (150, 30), (168, 96)]
-    d.polygon([(P(x), P(y)) for x, y in pts], fill=255)
-    body = body.filter(ImageFilter.GaussianBlur(K * 2.2)).point(lambda v: 255 if v > 120 else 0).filter(ImageFilter.GaussianBlur(K * 0.6))
-    c = ImageDraw.Draw(cut)
-    c.ellipse([P(110 - 17), P(100 - 17), P(110 + 17), P(100 + 17)], fill=255)
-    c.line([(P(110), P(100)), (P(110), P(210))], fill=255, width=P(9))
-    rot = 42  # clockwise on screen → tip swings to the lower left
-    body, cut = body.rotate(-rot, Image.BICUBIC), cut.rotate(-rot, Image.BICUBIC)
-    full_b, full_c = Image.new('L', (W, W), 0), Image.new('L', (W, W), 0)
-    pos = (P(806 - size / 2), P(640 - size / 2))
-    full_b.paste(body, pos)
-    full_c.paste(cut, pos)
-    return full_b, full_c
+BADGE_C = (806, 680)
+BADGE_R = 96
+
+
+def badge_masks():
+    """The 'doctor': a round badge with a medical cross, under the end of the outer wave."""
+    cx, cy = BADGE_C
+    disc = Image.new('L', (W, W), 0)
+    ImageDraw.Draw(disc).ellipse([P(cx - BADGE_R), P(cy - BADGE_R), P(cx + BADGE_R), P(cy + BADGE_R)], fill=255)
+    cross = Image.new('L', (W, W), 0)
+    d = ImageDraw.Draw(cross)
+    arm, bar, r = 58, 19, 10  # half length, half thickness, corner radius
+    d.rounded_rectangle([P(cx - bar), P(cy - arm), P(cx + bar), P(cy + arm)], radius=P(r), fill=255)
+    d.rounded_rectangle([P(cx - arm), P(cy - bar), P(cx + arm), P(cy + bar)], radius=P(r), fill=255)
+    return disc, cross
 
 
 def tag_masks():
@@ -129,17 +124,23 @@ def artwork():
     """The mark on a transparent canvas, plus its flat silhouette."""
     art = Image.new('RGBA', (W, W), (0, 0, 0, 0))
     arcs = arcs_mask()
-    nib, nib_cut = nib_masks()
+    disc, cross = badge_masks()
     face, text = tag_masks()
 
-    # Waves and nib: violet clay with a soft drop and a light top rim.
-    marks = ImageChops.lighter(arcs, ImageChops.subtract(nib, nib_cut))
+    # Waves and badge: violet clay with a soft drop and a light top rim.
+    marks = ImageChops.lighter(arcs, disc)
     paint(art, blur(shifted(marks, 0, 16), 14), '#5b45e6', 0.38)
     paint(art, marks, VIOLET)
     rim = ImageChops.subtract(marks, shifted(marks, 0, 7))
     paint(art, ImageChops.multiply(blur(rim, 3), marks), '#ffffff', 0.5)
     shade = ImageChops.subtract(marks, shifted(marks, 0, -7))
     paint(art, ImageChops.multiply(blur(shade, 3), marks), '#28148c', 0.35)
+
+    # The cross: white clay pressed onto the badge.
+    paint(art, ImageChops.multiply(blur(shifted(cross, 0, 6), 5), disc), '#28148c', 0.45)
+    paint(art, cross, gradient((W, W), [(0, '#ffffff'), (1, '#ece8ff')], 180))
+    low_x = ImageChops.subtract(cross, shifted(cross, 0, -6))
+    paint(art, ImageChops.multiply(blur(low_x, 3), cross), '#6e60dc', 0.25)
 
     # Tag: ground shadow, the slab's edge, then the top face.
     slab = shifted(face, 0, TAG_DEPTH)
@@ -152,7 +153,7 @@ def artwork():
     paint(art, ImageChops.multiply(blur(low, 7), face), '#6e60dc', 0.2)
     paint(art, text, gradient((W, W), [(0, '#6650ee'), (1, '#4c35ea')], 180))
 
-    silhouette = ImageChops.subtract(ImageChops.lighter(marks, ImageChops.lighter(face, slab)), text)
+    silhouette = ImageChops.subtract(ImageChops.lighter(marks, ImageChops.lighter(face, slab)), ImageChops.lighter(text, cross))
     return art, silhouette
 
 
