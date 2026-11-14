@@ -1,0 +1,485 @@
+/**
+ * Pure helpers for Tag diagnostics: chip identification, lock/password/permission
+ * analysis and the NTAG 424 DNA authentication maths. No NFC I/O here, so it can be
+ * unit-tested off-device.
+ */
+import aesjs from 'aes-js';
+
+export type Bytes = number[];
+export type Tone = 'ok' | 'warn' | 'bad' | 'info';
+export type Verdict = 'writable' | 'locked' | 'password' | 'key' | 'unknown';
+
+export interface Finding {
+  label: string;
+  value: string;
+  tone?: Tone;
+}
+
+export interface Diagnosis {
+  chip: string;
+  verdict: Verdict;
+  headline: string;
+  explanation: string;
+  advice: string[];
+  findings: Finding[];
+  /** NTAG 424 DNA key numbers that are worth testing against the factory default key. */
+  testableKeys?: number[];
+}
+
+export const hex = (bytes: Bytes, sep = ' ') =>
+  bytes.map((b) => (b & 0xff).toString(16).padStart(2, '0').toUpperCase()).join(sep);
+
+const bit = (value: number, n: number) => (value >> n) & 1;
+
+/* ================================================================== */
+/* NFC Forum Type 2: NTAG21x / MIFARE Ultralight                       */
+/* ================================================================== */
+
+interface Type2Chip {
+  name: string;
+  /** Last user-memory page. */
+  userEnd: number;
+  /** First configuration page (CFG0, holds AUTH0). */
+  cfg0?: number;
+  /** Dynamic lock bytes page, right before CFG0 on chips that have one. */
+  dynLock?: number;
+}
+
+/** Keyed by GET_VERSION bytes: product type, product subtype, storage size. */
+const TYPE2_CHIPS: Record<string, Type2Chip> = {
+  '04-01-0B': { name: 'NTAG210', userEnd: 0x0f, cfg0: 0x10 },
+  '04-01-0E': { name: 'NTAG212', userEnd: 0x23, dynLock: 0x24, cfg0: 0x25 },
+  '04-02-0F': { name: 'NTAG213', userEnd: 0x27, dynLock: 0x28, cfg0: 0x29 },
+  '04-02-11': { name: 'NTAG215', userEnd: 0x81, dynLock: 0x82, cfg0: 0x83 },
+  '04-02-13': { name: 'NTAG216', userEnd: 0xe1, dynLock: 0xe2, cfg0: 0xe3 },
+  '04-04-0F': { name: 'NTAG213 F', userEnd: 0x27, dynLock: 0x28, cfg0: 0x29 },
+  '04-04-13': { name: 'NTAG216 F', userEnd: 0xe1, dynLock: 0xe2, cfg0: 0xe3 },
+  '04-05-13': { name: 'NTAG I2C 1k', userEnd: 0xe1 },
+  '04-05-15': { name: 'NTAG I2C 2k', userEnd: 0xe1 },
+  '03-01-0B': { name: 'MIFARE Ultralight EV1 (48 bytes)', userEnd: 0x0f, cfg0: 0x10 },
+  '03-01-0E': { name: 'MIFARE Ultralight EV1 (128 bytes)', userEnd: 0x23, dynLock: 0x24, cfg0: 0x25 },
+};
+
+export function identifyType2(version: Bytes | null): Type2Chip | null {
+  if (!version || version.length < 8 || version[0] !== 0x00 || version[1] !== 0x04) return null;
+  const chip = TYPE2_CHIPS[hex([version[2], version[3], version[6]], '-')];
+  if (!chip) return null;
+  // NTAG213 TT reports major version 3 with the NTAG213 layout.
+  if (chip.name === 'NTAG213' && version[4] === 0x03) return { ...chip, name: 'NTAG213 TT' };
+  return chip;
+}
+
+/** The page the diagnostics READ starts at to fetch the lock + config pages in one go. */
+export function type2ConfigPage(chip: Type2Chip): number | null {
+  return chip.dynLock ?? chip.cfg0 ?? null;
+}
+
+export interface Type2Scan {
+  /** READ page 0 (pages 0–3: UID, static lock bytes, capability container). */
+  header: Bytes | null;
+  /** GET_VERSION response, or null when the chip doesn't support it. */
+  version: Bytes | null;
+  /** READ starting at the dynamic-lock / CFG0 page. */
+  config: Bytes | null;
+  /** The chip refused to read its configuration pages. */
+  configBlocked: boolean;
+}
+
+export function analyzeType2(scan: Type2Scan): Diagnosis {
+  const chip = identifyType2(scan.version);
+  const chipName = chip?.name ?? (scan.version ? `NFC Forum Type 2 (${hex(scan.version)})` : 'MIFARE Ultralight / NTAG (older, no version info)');
+  const findings: Finding[] = [{ label: 'Chip', value: chipName }];
+
+  if (!scan.header || scan.header.length < 16) {
+    return {
+      chip: 'MIFARE-family card',
+      verdict: 'unknown',
+      headline: 'Couldn’t read the chip’s settings',
+      explanation:
+        'The chip didn’t answer a standard memory read. Either its whole memory is password-protected, or it’s a MIFARE DESFire or MIFARE Plus card, which uses keys instead.',
+      advice: adviceForPassword(),
+      findings: [{ label: 'Chip', value: 'MIFARE family (not identified)' }],
+    };
+  }
+
+  const h = scan.header;
+  const lock0 = h[10];
+  const lock1 = h[11];
+  const cc = h.slice(12, 16);
+  const formatted = cc[0] === 0xe1;
+  const ccWrite = cc[3] & 0x0f;
+
+  const staticLocked: number[] = [];
+  for (let b = 4; b <= 7; b++) if (bit(lock0, b)) staticLocked.push(b);
+  for (let b = 0; b <= 7; b++) if (bit(lock1, b)) staticLocked.push(b + 8);
+  const ccPageLocked = bit(lock0, 3) === 1;
+
+  findings.push({
+    label: 'NDEF data area',
+    value: formatted ? `${cc[2] * 8} bytes, ${ccWrite === 0 ? 'marked writable' : 'marked read-only'}` : 'Not formatted for NDEF',
+    tone: formatted && ccWrite !== 0 ? 'bad' : undefined,
+  });
+  findings.push({
+    label: 'Lock bits (pages 3–15)',
+    value: staticLocked.length || ccPageLocked
+      ? `Set: ${[ccPageLocked ? 'capability container' : null, staticLocked.length ? `pages ${staticLocked.join(', ')}` : null].filter(Boolean).join(', ')}`
+      : 'None set',
+    tone: staticLocked.length ? 'bad' : undefined,
+  });
+
+  // Configuration pages: dynamic lock bytes, AUTH0, ACCESS.
+  let dynLocked = false;
+  let auth0: number | null = null;
+  let access: number | null = null;
+  if (chip && scan.config && scan.config.length >= 12) {
+    const offset = chip.dynLock ? 4 : 0;
+    if (chip.dynLock) {
+      dynLocked = (scan.config[0] | scan.config[1]) !== 0;
+      findings.push({
+        label: 'Lock bits (pages 16+)',
+        value: dynLocked ? `Set (${hex(scan.config.slice(0, 3))})` : 'None set',
+        tone: dynLocked ? 'bad' : undefined,
+      });
+    }
+    if (chip.cfg0 !== undefined) {
+      auth0 = scan.config[offset + 3];
+      access = scan.config[offset + 4];
+    }
+  }
+
+  const passwordFrom = auth0 !== null && chip && auth0 <= chip.userEnd ? auth0 : null;
+  if (auth0 !== null && chip) {
+    findings.push({
+      label: 'Password protection',
+      value: passwordFrom !== null ? `On, from page ${passwordFrom}` : 'Off',
+      tone: passwordFrom !== null ? 'warn' : 'ok',
+    });
+  }
+  if (access !== null) {
+    const prot = bit(access, 7) === 1;
+    const cfgLock = bit(access, 6) === 1;
+    const authLim = access & 0x07;
+    if (passwordFrom !== null) {
+      findings.push({ label: 'Password needed for', value: prot ? 'Reading and writing' : 'Writing only' });
+      findings.push({
+        label: 'Wrong-password limit',
+        value: authLim ? `${2 ** authLim} attempts, then the tag disables the password for good` : 'Unlimited',
+        tone: authLim ? 'warn' : undefined,
+      });
+    }
+    findings.push({ label: 'Configuration', value: cfgLock ? 'Permanently locked' : 'Not locked', tone: cfgLock ? 'warn' : undefined });
+  } else if (scan.configBlocked) {
+    findings.push({ label: 'Password protection', value: 'On (configuration pages are hidden)', tone: 'warn' });
+  } else if (!chip) {
+    findings.push({ label: 'Password protection', value: 'Can’t check on this chip' });
+  }
+
+  const permanentlyLocked = staticLocked.length > 0 || dynLocked || (formatted && ccWrite !== 0);
+
+  if (permanentlyLocked) {
+    return {
+      chip: chipName,
+      verdict: 'locked',
+      headline: 'Permanently locked',
+      explanation:
+        'Lock bits on this chip have been set. They’re one-time switches in the hardware: once set they can never be cleared, by any app or phone. The data on it is fixed for life.',
+      advice: [
+        'This tag can’t be formatted or rewritten. Replace it with a blank NTAG215 or NTAG216.',
+        'If it points to a dead company’s link, stop using it. Whoever registers that domain later controls where it sends people.',
+      ],
+      findings,
+    };
+  }
+
+  if (passwordFrom !== null || scan.configBlocked) {
+    return {
+      chip: chipName,
+      verdict: 'password',
+      headline: 'Password protected',
+      explanation:
+        'Writing to this chip needs a 32-bit password set by whoever programmed it. Without that password it can’t be erased or rewritten.',
+      advice: adviceForPassword(),
+      findings,
+    };
+  }
+
+  return {
+    chip: chipName,
+    verdict: chip ? 'writable' : 'unknown',
+    headline: chip ? 'Nothing is blocking writes' : 'No lock found',
+    explanation: chip
+      ? 'No lock bits are set and there’s no password. You should be able to write or erase this tag in the Write tab.'
+      : 'No lock bits are set, but this older chip can’t report whether it has a password.',
+    advice: [
+      formatted ? 'Try writing again, and keep the phone still until it finishes.' : 'Writing on Android will format the tag first.',
+      'If writing still fails, try another phone. iPhones and some Android phones struggle with certain tags.',
+    ],
+    findings,
+  };
+}
+
+function adviceForPassword(): string[] {
+  return [
+    'Only the company that programmed the card has the password. If it has closed, the card can’t be reset.',
+    'Don’t try guessing: many chips disable the password permanently after a few wrong tries.',
+    'Replace it with a blank NTAG215 or NTAG216 and write your own link.',
+  ];
+}
+
+/* ================================================================== */
+/* NFC Forum Type 4: NTAG 424 DNA, DESFire, other ISO-DEP tags          */
+/* ================================================================== */
+
+export const APDU = {
+  selectNdefApp: [0x00, 0xa4, 0x04, 0x00, 0x07, 0xd2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01, 0x00],
+  selectCcFile: [0x00, 0xa4, 0x00, 0x0c, 0x02, 0xe1, 0x03],
+  readCc: [0x00, 0xb0, 0x00, 0x00, 0x0f],
+  getVersion: [0x90, 0x60, 0x00, 0x00, 0x00],
+  additionalFrame: [0x90, 0xaf, 0x00, 0x00, 0x00],
+  /** GetFileSettings for file 02, the NDEF file on NTAG 424 DNA. */
+  getNdefFileSettings: [0x90, 0xf5, 0x00, 0x00, 0x01, 0x02, 0x00],
+  authenticateEv2First: (keyNo: number) => [0x90, 0x71, 0x00, 0x00, 0x02, keyNo, 0x00, 0x00],
+  authenticatePart2: (payload: Bytes) => [0x90, 0xaf, 0x00, 0x00, payload.length, ...payload, 0x00],
+};
+
+/** Splits an APDU response into data and the two status-word bytes. */
+export function splitResponse(response: Bytes): { data: Bytes; sw: number } {
+  const r = response.map((b) => b & 0xff);
+  if (r.length < 2) return { data: [], sw: 0 };
+  return { data: r.slice(0, -2), sw: (r[r.length - 2] << 8) | r[r.length - 1] };
+}
+
+export const SW = { OK: 0x9000, DESFIRE_OK: 0x9100, MORE: 0x91af, AUTH_ERROR: 0x91ae, PERMISSION_DENIED: 0x919d } as const;
+
+export interface Type4Scan {
+  ndefApp: boolean;
+  cc: Bytes | null;
+  /** Hardware part of the native GetVersion response (7 bytes). */
+  version: Bytes | null;
+  fileSettings: Bytes | null;
+  fileSettingsSw: number | null;
+}
+
+export function identifyType4(version: Bytes | null): string | null {
+  if (!version || version.length < 7 || version[0] !== 0x04) return null;
+  switch (version[1]) {
+    case 0x04:
+      return version[2] === 0x08 ? 'NTAG 424 DNA TagTamper' : 'NTAG 424 DNA';
+    case 0x01:
+      return 'MIFARE DESFire';
+    case 0x08:
+      return 'MIFARE DESFire Light';
+    default:
+      return null;
+  }
+}
+
+const accessName = (n: number) => (n === 0xe ? 'Anyone' : n === 0xf ? 'No one' : `Holder of AES key ${n}`);
+
+export function analyzeType4(scan: Type4Scan): Diagnosis {
+  const named = identifyType4(scan.version);
+  const chip = named ?? 'ISO 14443-4 smart card';
+  const findings: Finding[] = [{ label: 'Chip', value: chip }];
+
+  if (!scan.ndefApp) {
+    return {
+      chip,
+      verdict: 'unknown',
+      headline: 'Not an NFC data tag',
+      explanation:
+        'This card has no NDEF application, so it isn’t meant to hold links or text. It’s probably a payment, transit, access or ID card.',
+      advice: ['Cards like this can’t be formatted into NFC tags. Use a blank NTAG215 or NTAG216 instead.'],
+      findings,
+    };
+  }
+
+  const ccWrite = scan.cc && scan.cc.length >= 15 ? scan.cc[14] : null;
+  if (scan.cc && scan.cc.length >= 13) {
+    findings.push({ label: 'NDEF capacity', value: `${(scan.cc[11] << 8) | scan.cc[12]} bytes` });
+  }
+  if (ccWrite !== null) {
+    findings.push({
+      label: 'NDEF container says',
+      value: ccWrite === 0x00 ? 'Writable' : ccWrite === 0xff ? 'Read-only' : `Restricted (0x${hex([ccWrite])})`,
+    });
+  }
+
+  if (named?.startsWith('NTAG 424') && scan.fileSettings && scan.fileSettings.length >= 7) {
+    const fs = scan.fileSettings;
+    const sdm = bit(fs[1], 6) === 1;
+    const change = fs[2] & 0x0f;
+    const readWrite = fs[2] >> 4;
+    const read = fs[3] >> 4;
+    const write = fs[3] & 0x0f;
+    findings.push(
+      { label: 'Who can read', value: accessName(read) },
+      { label: 'Who can write', value: accessName(write), tone: write === 0xe ? 'ok' : 'bad' },
+      { label: 'Who can change permissions', value: accessName(change), tone: change === 0xe ? 'ok' : 'warn' },
+    );
+    if (readWrite !== write) findings.push({ label: 'Who can read and write', value: accessName(readWrite) });
+    if (sdm) {
+      const opts = fs[7] ?? 0;
+      const parts = [bit(opts, 7) ? 'UID' : null, bit(opts, 6) ? 'tap counter' : null, 'CMAC signature', bit(opts, 4) ? 'encrypted data' : null];
+      findings.push({ label: 'SUN (dynamic URL)', value: `On: adds ${parts.filter(Boolean).join(', ')} to every tap`, tone: 'info' });
+    }
+
+    const testable = [...new Set([write, change])].filter((k) => k <= 4);
+
+    if (write === 0xe) {
+      return {
+        chip,
+        verdict: 'writable',
+        headline: 'Writing is allowed',
+        explanation: 'The chip’s file permissions let anyone write the NDEF data.',
+        advice: ['Try writing again in the Write tab, and keep the phone still until it finishes.'],
+        findings,
+      };
+    }
+    if (write === 0xf && change === 0xf) {
+      return {
+        chip,
+        verdict: 'locked',
+        headline: 'Permanently locked',
+        explanation: 'Writing is switched off, and so is changing the permissions. Nobody can ever rewrite this card, not even the vendor.',
+        advice: replaceAdvice(sdm),
+        findings,
+      };
+    }
+    return {
+      chip,
+      verdict: 'key',
+      headline: `Protected by AES key ${write <= 4 ? write : change}`,
+      explanation:
+        `This is a secure NTAG 424 DNA chip. Its link can only be changed by someone holding a secret 128-bit AES key, which was set by the company that issued it.${sdm ? ' The link changes on every tap (SUN), so the company’s server can check the card is genuine.' : ''} Apps that say “Writable: Yes” are only reading the NDEF container, not these permissions.`,
+      advice: [
+        'Some vendors never change NXP’s factory key. “Test factory key” below checks that. If it matches, the card can be reset.',
+        ...replaceAdvice(sdm),
+      ],
+      findings,
+      testableKeys: testable.length ? testable : [0],
+    };
+  }
+
+  if (named?.startsWith('NTAG 424')) {
+    findings.push({ label: 'File permissions', value: `Hidden (status ${hex([(scan.fileSettingsSw ?? 0) >> 8, (scan.fileSettingsSw ?? 0) & 0xff])})`, tone: 'warn' });
+    return {
+      chip,
+      verdict: 'key',
+      headline: 'Protected by an AES key',
+      explanation: 'This NTAG 424 DNA chip hides its file permissions without a key. That means it was configured with custom security by its issuer.',
+      advice: ['“Test factory key” below checks whether the factory key still works.', ...replaceAdvice(false)],
+      findings,
+      testableKeys: [0],
+    };
+  }
+
+  // Generic Type 4 (DESFire, other ISO-DEP tags): only the NDEF container's write flag is standard.
+  if (ccWrite === 0x00) {
+    return {
+      chip,
+      verdict: 'writable',
+      headline: 'Writing is allowed',
+      explanation: 'The tag’s NDEF container allows writing.',
+      advice: ['Try writing again in the Write tab, and keep the phone still until it finishes.'],
+      findings,
+    };
+  }
+  if (ccWrite === 0xff) {
+    return {
+      chip,
+      verdict: 'locked',
+      headline: 'Read-only',
+      explanation: 'The tag’s NDEF container is marked read-only, so standard NFC apps can’t write it.',
+      advice: replaceAdvice(false),
+      findings,
+    };
+  }
+  return {
+    chip,
+    verdict: 'key',
+    headline: 'Protected by a key',
+    explanation: 'Writing needs a proprietary key or password set by whoever issued the card.',
+    advice: replaceAdvice(false),
+    findings,
+  };
+}
+
+function replaceAdvice(sdm: boolean): string[] {
+  return [
+    'Without the key it can’t be rewritten or reset. Replace it with a blank NTAG215/216, or with a blank NTAG 424 DNA if you want the same anti-cloning protection.',
+    sdm
+      ? 'If the company’s domain lapses, whoever registers it next controls where this card sends people. Retire these cards.'
+      : 'If it points to a dead company’s link, stop handing it out.',
+  ];
+}
+
+/* ================================================================== */
+/* Other technologies                                                  */
+/* ================================================================== */
+
+export function analyzeClassic(opts: { formattable: boolean; ndefWritable: boolean | null }): Diagnosis {
+  const findings: Finding[] = [{ label: 'Chip', value: 'MIFARE Classic' }];
+  if (opts.formattable) {
+    return {
+      chip: 'MIFARE Classic',
+      verdict: 'writable',
+      headline: 'Can be formatted',
+      explanation: 'Android reports this MIFARE Classic card as formattable, which means it still uses the factory keys.',
+      advice: ['Write anything in the Write tab on this Android phone and it will be formatted automatically. iPhones can’t write MIFARE Classic.'],
+      findings,
+    };
+  }
+  findings.push({ label: 'Android NDEF access', value: opts.ndefWritable === null ? 'Not available' : opts.ndefWritable ? 'Writable' : 'Read-only' });
+  return {
+    chip: 'MIFARE Classic',
+    verdict: opts.ndefWritable ? 'writable' : 'key',
+    headline: opts.ndefWritable ? 'Writable' : 'Protected by sector keys',
+    explanation: opts.ndefWritable
+      ? 'Android can write NDEF data to this card.'
+      : 'MIFARE Classic memory is guarded by 48-bit sector keys. Without the issuer’s keys this card can’t be rewritten. iPhones can’t write MIFARE Classic at all.',
+    advice: opts.ndefWritable ? ['Use the Write tab on Android.'] : ['Replace it with a blank NTAG215 or NTAG216, which work on every phone.'],
+    findings,
+  };
+}
+
+export function analyzeGeneric(chip: string, ndefWritable: boolean | null): Diagnosis {
+  return {
+    chip,
+    verdict: ndefWritable === false ? 'locked' : ndefWritable ? 'writable' : 'unknown',
+    headline: ndefWritable === false ? 'Read-only' : ndefWritable ? 'Writable' : 'Not checked in detail',
+    explanation:
+      ndefWritable === false
+        ? 'The phone reports this tag’s NDEF data as read-only.'
+        : ndefWritable
+          ? 'The phone reports this tag as writable.'
+          : 'Detailed checks are available for NTAG/Ultralight and NTAG 424 DNA chips. This tag uses a different technology.',
+    advice: ndefWritable === false ? ['Replace it with a blank NTAG215 or NTAG216.'] : ['Try writing it in the Write tab.'],
+    findings: [{ label: 'Chip', value: chip }],
+  };
+}
+
+/* ================================================================== */
+/* NTAG 424 DNA: AuthenticateEV2First with a candidate key             */
+/* ================================================================== */
+
+export const FACTORY_KEY: Bytes = new Array(16).fill(0);
+
+function cbc(key: Bytes) {
+  return new aesjs.ModeOfOperation.cbc(Uint8Array.from(key), new Uint8Array(16));
+}
+
+export const rotateLeft = (bytes: Bytes) => [...bytes.slice(1), bytes[0]];
+
+/** Part 2 of AuthenticateEV2First: E(K, RndA || RndB') where RndB' is RndB rotated left by one byte. */
+export function authPart2Payload(key: Bytes, encRndB: Bytes, rndA: Bytes): Bytes {
+  const rndB = Array.from(cbc(key).decrypt(Uint8Array.from(encRndB)));
+  return Array.from(cbc(key).encrypt(Uint8Array.from([...rndA, ...rotateLeft(rndB)])));
+}
+
+/** The card answers E(K, TI || RndA' || PDcap2 || PCDcap2); RndA' must be our RndA rotated left. */
+export function authPart2Verify(key: Bytes, response: Bytes, rndA: Bytes): boolean {
+  if (response.length !== 32) return false;
+  const plain = Array.from(cbc(key).decrypt(Uint8Array.from(response)));
+  const expected = rotateLeft(rndA);
+  return plain.slice(4, 20).every((b, i) => b === expected[i]);
+}

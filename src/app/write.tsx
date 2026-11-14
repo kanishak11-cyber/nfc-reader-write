@@ -1,3 +1,4 @@
+import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { Alert, Text, View } from 'react-native';
 
@@ -28,7 +29,7 @@ export default function WriteScreen() {
   const [kind, setKind] = useState<WriteKind>('link');
   const [form, setForm] = useState<WriteForm>(EMPTY_FORM);
   const [busy, setBusy] = useState<Busy>(null);
-  const [outcome, setOutcome] = useState<{ tone: 'success' | 'danger'; title: string; message?: string } | null>(null);
+  const [outcome, setOutcome] = useState<{ tone: 'success' | 'danger'; title: string; message?: string; diagnose?: boolean } | null>(null);
 
   const set = <K extends keyof WriteForm>(key: K) => (value: WriteForm[K]) => {
     setForm((f) => ({ ...f, [key]: value }));
@@ -57,7 +58,12 @@ export default function WriteScreen() {
       });
     } catch (e) {
       if (e instanceof ScanCancelled) return;
-      setOutcome({ tone: 'danger', title: action === 'erase' ? 'Couldn’t erase the tag' : 'Couldn’t write the tag', message: e instanceof Error ? e.message : String(e) });
+      setOutcome({
+        tone: 'danger',
+        title: action === 'erase' ? 'Couldn’t erase the tag' : 'Couldn’t write the tag',
+        message: e instanceof Error ? e.message : String(e),
+        diagnose: true,
+      });
     } finally {
       setBusy(null);
     }
@@ -107,7 +113,18 @@ export default function WriteScreen() {
         ) : null}
       </Card>
 
-      {outcome ? <Notice tone={outcome.tone} title={outcome.title} message={outcome.message} /> : null}
+      {outcome ? (
+        <Notice
+          tone={outcome.tone}
+          title={outcome.title}
+          message={outcome.message}
+          action={
+            outcome.diagnose ? (
+              <Button label="Diagnose this tag" size="sm" variant="secondary" onPress={() => router.navigate('/diagnose')} />
+            ) : undefined
+          }
+        />
+      ) : null}
 
       <Button label="Write to tag" size="lg" onPress={write} loading={busy === 'write'} disabled={!ready || busy !== null} />
       <Button label="Erase a tag" variant="danger" onPress={erase} loading={busy === 'erase'} disabled={!ready || busy !== null} />

@@ -9,6 +9,12 @@ An open-source Expo (React Native) app for iOS and Android that reads and writes
 
 - **Read**: the tag's serial number (UID), type, technologies, storage used and capacity, whether it's locked, and every NDEF record, decoded. Supported records are text, links, phone, email, SMS, location, Wi-Fi, contact cards, smart posters, Android app records and raw MIME data. Links can be opened, values copied, and raw bytes shown.
 - **Write**: a link, text, phone number, email, or Wi-Fi network. The app shows the size in bytes before you write, checks it against the tag's capacity, and formats blank tags on Android. **Erase** writes an empty NDEF message.
+- **Diagnose**: explains why a tag can't be written or erased. It reads the chip's own settings:
+  - **NTAG21x / MIFARE Ultralight**: exact chip model, permanent lock bits, the read-only flag, password protection (start page, read protection, attempt limit) and configuration lock.
+  - **NTAG 424 DNA**: which AES key guards writing and changing permissions, and whether SUN dynamic URLs are on. An opt-in **Test factory key** button checks whether the vendor left NXP's default key in place, which decides whether the card can be reset.
+  - **MIFARE Classic, DESFire and ISO 15693 tags**: identifies the type and explains what controls access.
+
+  Diagnose only reads; it never writes to the tag.
 
 Built on [`react-native-nfc-manager`](https://github.com/revtel/react-native-nfc-manager) v4 and Expo Router native tabs (SDK 58).
 
@@ -116,11 +122,14 @@ Options: `--ios` / `--android` (build one platform only), `--no-submit`, `--wait
 ## Project layout
 
 ```
-src/app/_layout.tsx        Native tab bar (Read, Write)
+src/app/_layout.tsx        Native tab bar (Read, Write, Diagnose)
 src/app/index.tsx          Read screen
 src/app/write.tsx          Write screen
+src/app/diagnose.tsx       Diagnose screen
 src/lib/nfc.ts             NFC sessions: availability, read, write, erase, errors
 src/lib/ndef.ts            NDEF decode/encode (text, URI, Wi-Fi WSC, vCard, smart poster…)
+src/lib/chips.ts           Chip identification, lock/password/permission analysis, NTAG 424 auth (pure, testable)
+src/lib/diagnose.ts        Diagnose sessions: raw NFC-A / ISO-DEP commands, factory-key test
 src/components/            UI building blocks, record card, Android scan sheet
 ```
 

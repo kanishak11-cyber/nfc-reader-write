@@ -154,19 +154,22 @@ export function InfoRow({
   monospace = false,
   copyable = false,
   last = false,
+  tone,
 }: {
   label: string;
   value: string;
   monospace?: boolean;
   copyable?: boolean;
   last?: boolean;
+  tone?: 'ok' | 'warn' | 'bad' | 'info';
 }) {
   const t = useTheme();
+  const color = tone ? { ok: t.success, warn: t.warning, bad: t.danger, info: t.accent }[tone] : t.text;
   return (
     <View style={[styles.infoRow, !last && { borderBottomColor: t.border, borderBottomWidth: StyleSheet.hairlineWidth }]}>
       <Text style={[styles.infoLabel, { color: t.textMuted }]}>{label}</Text>
       <View style={styles.infoValueWrap}>
-        <Text selectable style={[styles.infoValue, { color: t.text }, monospace && mono]}>
+        <Text selectable style={[styles.infoValue, { color }, monospace && mono]}>
           {value}
         </Text>
         {copyable ? <CopyButton value={value} /> : null}

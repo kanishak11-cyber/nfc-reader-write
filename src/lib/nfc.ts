@@ -62,7 +62,7 @@ const READ_TECHS_ANDROID = [
 
 let sessionActive = false;
 
-async function withSession<T>(
+export async function withSession<T>(
   techs: NfcTech | NfcTech[],
   prompt: string,
   successMessage: string,
@@ -190,7 +190,13 @@ export function writeRecords(records: NdefRecord[], successMessage = 'Written to
       }
     }
 
-    await NfcManager.ndefHandler.writeNdefMessage(bytes);
+    try {
+      await NfcManager.ndefHandler.writeNdefMessage(bytes);
+    } catch (error) {
+      if (error instanceof NfcError.UserCancel || error instanceof NfcError.TagConnectionLost) throw error;
+      // The NDEF layer said "writable" but the chip refused: typical of password- or key-protected tags.
+      throw new Error('The tag refused the write. It may be protected by a password or key; the Diagnose tab can check.');
+    }
     return { bytes: bytes.length, capacity: status?.capacity ?? null, formatted: false };
   });
 }

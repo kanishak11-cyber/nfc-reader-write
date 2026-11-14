@@ -14,6 +14,10 @@ export default function TabLayout() {
           <NativeTabs.Trigger.Label>Write</NativeTabs.Trigger.Label>
           <NativeTabs.Trigger.Icon sf="square.and.pencil" md="edit" />
         </NativeTabs.Trigger>
+        <NativeTabs.Trigger name="diagnose">
+          <NativeTabs.Trigger.Label>Diagnose</NativeTabs.Trigger.Label>
+          <NativeTabs.Trigger.Icon sf="stethoscope" md="troubleshoot" />
+        </NativeTabs.Trigger>
       </NativeTabs>
     </>
   );
