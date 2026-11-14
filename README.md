@@ -55,6 +55,28 @@ Build numbers increase on their own (`appVersionSource: remote`). When processin
 
 Other profiles in `eas.json`: `development` (dev client) and `preview` (internal ad hoc build, APK on Android).
 
+## Releasing
+
+`scripts/release.mjs` bumps the version, builds the iOS app on EAS (auto-submitted to TestFlight), and exports the Android release APK:
+
+```sh
+npm run release:patch                 # 1.0.0 → 1.0.1
+npm run release:minor                 # 1.0.0 → 1.1.0
+npm run release:major                 # 1.0.0 → 2.0.0
+npm run release -- none               # rebuild the current version
+npm run release -- patch --dry-run    # preview without changing anything
+```
+
+A run does the following:
+1. Refuses to start if there are uncommitted changes, or if the tag already exists.
+2. Runs the typecheck and lint.
+3. Writes the new version to `app.json` and `package.json`. It also sets the Android `versionCode` to `major*10000 + minor*100 + patch` (so 1.2.3 becomes 10203), which means each APK installs over the last one.
+4. Commits `chore(release): vX.Y.Z` and tags `vX.Y.Z`. Nothing is pushed; run `git push --follow-tags` when you're ready.
+5. Starts the iOS production build on EAS with TestFlight auto-submit. EAS raises the iOS build number itself.
+6. Regenerates the Android project, builds the release APK, and saves it as `releases/vX.Y.Z/nfc-read-write-vX.Y.Z-<versionCode>.apk`, printing its SHA-256.
+
+Options: `--ios` / `--android` (build one platform only), `--no-submit`, `--wait` (stay until the EAS build finishes), `--install` (`adb install -r` the APK), `--no-git`, `--allow-dirty`, `--skip-checks`. Run `npm run release -- --help` for details.
+
 ## Platform differences
 
 | | iOS | Android |
