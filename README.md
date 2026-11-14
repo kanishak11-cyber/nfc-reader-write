@@ -1,5 +1,6 @@
 # NFC Read Write
 
+[![Latest release](https://img.shields.io/github/v/release/kanishak11-cyber/nfc-reader-write)](https://github.com/kanishak11-cyber/nfc-reader-write/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platforms: iOS | Android](https://img.shields.io/badge/platforms-iOS%20%7C%20Android-lightgrey)
 ![Expo SDK 58](https://img.shields.io/badge/Expo%20SDK-58-000020)
@@ -10,6 +11,12 @@ An open-source Expo (React Native) app for iOS and Android that reads and writes
 - **Write**: a link, text, phone number, email, or Wi-Fi network. The app shows the size in bytes before you write, checks it against the tag's capacity, and formats blank tags on Android. **Erase** writes an empty NDEF message.
 
 Built on [`react-native-nfc-manager`](https://github.com/revtel/react-native-nfc-manager) v4 and Expo Router native tabs (SDK 58).
+
+## Download
+
+**Android:** [**Download the latest APK**](https://github.com/kanishak11-cyber/nfc-reader-write/releases/latest). Open the `.apk` on your phone, allow installs from unknown sources if asked, and turn on NFC. The release notes list a SHA-256 checksum for each APK.
+
+**iOS:** Apple doesn't allow installing apps from a file. Build it yourself with the steps under [Running it](#running-it).
 
 ## Running it
 
