@@ -1,11 +1,19 @@
+import { router } from 'expo-router';
 import { useState } from 'react';
-import { Platform, Text, View } from 'react-native';
+import { Alert, Platform, Text, View } from 'react-native';
 
 import { NfcStatus } from '@/components/NfcStatus';
 import { ScanSheet } from '@/components/ScanSheet';
 import { Button, Card, InfoRow, Notice, Screen, SectionLabel } from '@/components/ui';
 import type { Verdict } from '@/lib/chips';
-import { diagnoseTag, testFactoryKeys, type DiagnosisResult, type KeyTestResult } from '@/lib/diagnose';
+import {
+  diagnoseTag,
+  resetNtag424,
+  testFactoryKeys,
+  type DiagnosisResult,
+  type KeyTestResult,
+  type ResetResult,
+} from '@/lib/diagnose';
 import { cancelScan, ScanCancelled } from '@/lib/nfc';
 import { space, useTheme } from '@/lib/theme';
 import { useNfcAvailability } from '@/lib/useNfcAvailability';
@@ -18,7 +26,13 @@ const VERDICT_TONE: Record<Verdict, 'success' | 'danger' | 'warning' | 'info'> =
   unknown: 'info',
 };
 
-type Busy = 'scan' | 'keys' | null;
+type Busy = 'scan' | 'keys' | 'reset' | null;
+
+const SHEET_TITLE: Record<Exclude<Busy, null>, string> = {
+  scan: 'Ready to check',
+  keys: 'Testing factory key',
+  reset: 'Resetting card',
+};
 
 export default function DiagnoseScreen() {
   const t = useTheme();
@@ -26,31 +40,53 @@ export default function DiagnoseScreen() {
   const [busy, setBusy] = useState<Busy>(null);
   const [result, setResult] = useState<DiagnosisResult | null>(null);
   const [keyTest, setKeyTest] = useState<KeyTestResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [reset, setReset] = useState<ResetResult | null>(null);
+  const [error, setError] = useState<{ title: string; message: string } | null>(null);
 
-  const run = async <T,>(kind: Exclude<Busy, null>, task: () => Promise<T>, onDone: (value: T) => void) => {
+  const run = async <T,>(kind: Exclude<Busy, null>, errorTitle: string, task: () => Promise<T>, onDone: (value: T) => void) => {
     setError(null);
     setBusy(kind);
     try {
       onDone(await task());
     } catch (e) {
-      if (!(e instanceof ScanCancelled)) setError(e instanceof Error ? e.message : String(e));
+      if (!(e instanceof ScanCancelled)) setError({ title: errorTitle, message: e instanceof Error ? e.message : String(e) });
     } finally {
       setBusy(null);
     }
   };
 
   const scan = () =>
-    run('scan', diagnoseTag, (r) => {
+    run('scan', 'Couldn’t check the tag', diagnoseTag, (r) => {
       setResult(r);
       setKeyTest(null);
+      setReset(null);
     });
 
   const testKeys = () => {
-    if (result?.testableKeys) run('keys', () => testFactoryKeys(result.testableKeys!), setKeyTest);
+    if (result?.testableKeys) run('keys', 'Couldn’t test the key', () => testFactoryKeys(result.testableKeys!), setKeyTest);
+  };
+
+  const confirmReset = () => {
+    if (!result) return;
+    Alert.alert(
+      'Reset this card?',
+      'This turns off its secure dynamic link (SUN), deletes the old link, and makes the card writable by anyone, like a new blank tag. You can’t undo this.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: () => run('reset', 'Couldn’t reset the card', () => resetNtag424(result.uid), setReset),
+        },
+      ],
+    );
   };
 
   const ready = availability === 'ready';
+  const canReset =
+    result?.changeKey !== undefined &&
+    !!keyTest?.results.some((r) => r.isFactory && r.keyNo === result.changeKey) &&
+    (!keyTest.uid || keyTest.uid === result.uid);
 
   return (
     <Screen title="Diagnose" subtitle="Find out why a tag can’t be written or erased.">
@@ -64,7 +100,19 @@ export default function DiagnoseScreen() {
         disabled={!ready || busy !== null}
       />
 
-      {error ? <Notice tone="danger" title="Couldn’t check the tag" message={error} /> : null}
+      {error ? <Notice tone="danger" title={error.title} message={error.message} /> : null}
+
+      {reset ? (
+        <Notice
+          tone="success"
+          title="Card reset"
+          message={[
+            reset.cleared ? 'The old link is gone and the card is blank.' : 'Permissions are reset. Use Erase in the Write tab to clear the old link.',
+            'Anyone can now write it, like a new tag. Its secure dynamic link is off.',
+          ].join(' ')}
+          action={<Button label="Write a new link" size="sm" variant="secondary" onPress={() => router.navigate('/write')} />}
+        />
+      ) : null}
 
       {result ? (
         <>
@@ -87,9 +135,11 @@ export default function DiagnoseScreen() {
               keys={result.testableKeys}
               uid={result.uid}
               test={keyTest}
-              busy={busy === 'keys'}
+              canReset={canReset && !reset}
+              busy={busy}
               disabled={!ready || busy !== null}
               onTest={testKeys}
+              onReset={confirmReset}
             />
           ) : null}
 
@@ -114,8 +164,8 @@ export default function DiagnoseScreen() {
 
       <ScanSheet
         visible={busy !== null}
-        title={busy === 'keys' ? 'Testing factory key' : 'Ready to check'}
-        message="Hold the tag against the back of your phone and keep it still until the check finishes."
+        title={busy ? SHEET_TITLE[busy] : ''}
+        message="Hold the tag against the back of your phone and keep it still until it finishes."
         onCancel={cancelScan}
       />
     </Screen>
@@ -126,16 +176,20 @@ function FactoryKeyCard({
   keys,
   uid,
   test,
+  canReset,
   busy,
   disabled,
   onTest,
+  onReset,
 }: {
   keys: number[];
   uid: string;
   test: KeyTestResult | null;
-  busy: boolean;
+  canReset: boolean;
+  busy: Busy;
   disabled: boolean;
   onTest: () => void;
+  onReset: () => void;
 }) {
   const t = useTheme();
   const keyList = keys.map((k) => `key ${k}`).join(' and ');
@@ -155,7 +209,11 @@ function FactoryKeyCard({
             <Notice
               tone="success"
               title={`${factory.map((r) => `Key ${r.keyNo}`).join(' and ')} still ${factory.length > 1 ? 'use' : 'uses'} the factory key`}
-              message="The vendor never changed it, so this card can be reset and rewritten with the factory key. Resetting NTAG 424 DNA cards isn’t built into this version of the app yet."
+              message={
+                canReset
+                  ? 'The vendor never changed it, so you can reset this card to a blank, writable tag.'
+                  : 'The factory key works, but it isn’t the key that controls this card’s permissions, so it can’t be reset here.'
+              }
             />
           ) : (
             <Notice
@@ -168,11 +226,14 @@ function FactoryKeyCard({
         {otherCard ? (
           <Text style={{ color: t.warning, fontSize: 13 }}>Note: this result is for a different card ({test!.uid}).</Text>
         ) : null}
+        {canReset ? (
+          <Button label="Reset card" variant="danger" onPress={onReset} loading={busy === 'reset' && Platform.OS === 'ios'} disabled={disabled} />
+        ) : null}
         <Button
           label={test ? 'Test again' : 'Test factory key'}
           variant="secondary"
           onPress={onTest}
-          loading={busy && Platform.OS === 'ios'}
+          loading={busy === 'keys' && Platform.OS === 'ios'}
           disabled={disabled}
         />
       </Card>

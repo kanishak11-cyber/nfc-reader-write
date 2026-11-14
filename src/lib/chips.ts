@@ -24,6 +24,8 @@ export interface Diagnosis {
   findings: Finding[];
   /** NTAG 424 DNA key numbers that are worth testing against the factory default key. */
   testableKeys?: number[];
+  /** NTAG 424 DNA key that may change file permissions; a reset needs it to be the factory key. */
+  changeKey?: number;
 }
 
 export const hex = (bytes: Bytes, sep = ' ') =>
@@ -352,11 +354,12 @@ export function analyzeType4(scan: Type4Scan): Diagnosis {
       explanation:
         `This is a secure NTAG 424 DNA chip. Its link can only be changed by someone holding a secret 128-bit AES key, which was set by the company that issued it.${sdm ? ' The link changes on every tap (SUN), so the company’s server can check the card is genuine.' : ''} Apps that say “Writable: Yes” are only reading the NDEF container, not these permissions.`,
       advice: [
-        'Some vendors never change NXP’s factory key. “Test factory key” below checks that. If it matches, the card can be reset.',
+        'Some vendors never change NXP’s factory key. “Test factory key” below checks that. If it matches, you can reset the card and reuse it.',
         ...replaceAdvice(sdm),
       ],
       findings,
       testableKeys: testable.length ? testable : [0],
+      changeKey: change <= 4 ? change : undefined,
     };
   }
 
@@ -370,6 +373,7 @@ export function analyzeType4(scan: Type4Scan): Diagnosis {
       advice: ['“Test factory key” below checks whether the factory key still works.', ...replaceAdvice(false)],
       findings,
       testableKeys: [0],
+      changeKey: 0,
     };
   }
 
@@ -464,22 +468,126 @@ export function analyzeGeneric(chip: string, ndefWritable: boolean | null): Diag
 
 export const FACTORY_KEY: Bytes = new Array(16).fill(0);
 
-function cbc(key: Bytes) {
-  return new aesjs.ModeOfOperation.cbc(Uint8Array.from(key), new Uint8Array(16));
+const ZERO_BLOCK: Bytes = new Array(16).fill(0);
+const u8 = (b: Bytes) => Uint8Array.from(b);
+const xor = (a: Bytes, b: Bytes) => a.map((x, i) => x ^ b[i]);
+const le16 = (n: number) => [n & 0xff, (n >> 8) & 0xff];
+
+function ecbEncrypt(key: Bytes, block: Bytes): Bytes {
+  return Array.from(new aesjs.ModeOfOperation.ecb(u8(key)).encrypt(u8(block)));
+}
+function cbcEncrypt(key: Bytes, iv: Bytes, data: Bytes): Bytes {
+  return Array.from(new aesjs.ModeOfOperation.cbc(u8(key), u8(iv)).encrypt(u8(data)));
+}
+function cbcDecrypt(key: Bytes, iv: Bytes, data: Bytes): Bytes {
+  return Array.from(new aesjs.ModeOfOperation.cbc(u8(key), u8(iv)).decrypt(u8(data)));
+}
+
+/** ISO/IEC 9797-1 padding method 2: 0x80 then zeros up to a 16-byte boundary (always added). */
+export function pad80(data: Bytes): Bytes {
+  const out = [...data, 0x80];
+  while (out.length % 16) out.push(0);
+  return out;
+}
+
+function shiftLeft(block: Bytes): Bytes {
+  const out = new Array<number>(16);
+  let carry = 0;
+  for (let i = 15; i >= 0; i--) {
+    out[i] = ((block[i] << 1) & 0xff) | carry;
+    carry = block[i] >> 7;
+  }
+  return out;
+}
+
+/** AES-CMAC (RFC 4493 / NIST SP 800-38B). */
+export function cmac(key: Bytes, message: Bytes): Bytes {
+  const l = ecbEncrypt(key, ZERO_BLOCK);
+  const k1 = shiftLeft(l);
+  if (l[0] & 0x80) k1[15] ^= 0x87;
+  const k2 = shiftLeft(k1);
+  if (k1[0] & 0x80) k2[15] ^= 0x87;
+
+  const blocks = Math.max(1, Math.ceil(message.length / 16));
+  const complete = message.length > 0 && message.length % 16 === 0;
+  const tail = message.slice((blocks - 1) * 16);
+  const last = complete ? xor(tail, k1) : xor(pad80(tail), k2);
+
+  let x = ZERO_BLOCK;
+  for (let i = 0; i < blocks - 1; i++) x = ecbEncrypt(key, xor(x, message.slice(i * 16, i * 16 + 16)));
+  return ecbEncrypt(key, xor(x, last));
 }
 
 export const rotateLeft = (bytes: Bytes) => [...bytes.slice(1), bytes[0]];
 
-/** Part 2 of AuthenticateEV2First: E(K, RndA || RndB') where RndB' is RndB rotated left by one byte. */
-export function authPart2Payload(key: Bytes, encRndB: Bytes, rndA: Bytes): Bytes {
-  const rndB = Array.from(cbc(key).decrypt(Uint8Array.from(encRndB)));
-  return Array.from(cbc(key).encrypt(Uint8Array.from([...rndA, ...rotateLeft(rndB)])));
+/** AuthenticateEV2First part 1: the card sends E(K, RndB). */
+export function decryptRndB(key: Bytes, encRndB: Bytes): Bytes {
+  return cbcDecrypt(key, ZERO_BLOCK, encRndB);
+}
+
+/** Part 2: E(K, RndA || RndB') where RndB' is RndB rotated left by one byte. */
+export function authPart2Payload(key: Bytes, rndB: Bytes, rndA: Bytes): Bytes {
+  return cbcEncrypt(key, ZERO_BLOCK, [...rndA, ...rotateLeft(rndB)]);
 }
 
 /** The card answers E(K, TI || RndA' || PDcap2 || PCDcap2); RndA' must be our RndA rotated left. */
-export function authPart2Verify(key: Bytes, response: Bytes, rndA: Bytes): boolean {
-  if (response.length !== 32) return false;
-  const plain = Array.from(cbc(key).decrypt(Uint8Array.from(response)));
+export function authPart2Result(key: Bytes, response: Bytes, rndA: Bytes): { ok: boolean; ti: Bytes } {
+  if (response.length !== 32) return { ok: false, ti: [] };
+  const plain = cbcDecrypt(key, ZERO_BLOCK, response);
   const expected = rotateLeft(rndA);
-  return plain.slice(4, 20).every((b, i) => b === expected[i]);
+  return { ok: plain.slice(4, 20).every((b, i) => b === expected[i]), ti: plain.slice(0, 4) };
 }
+
+/* Secure messaging (NTAG 424 DNA datasheet §9.1, NXP AN12196) -------- */
+
+export interface SecureSession {
+  enc: Bytes;
+  mac: Bytes;
+  ti: Bytes;
+  /** Command counter: 0 right after authentication, +1 after every command. */
+  ctr: number;
+}
+
+/** SV1/SV2 = label || 00 01 00 80 || RndA[15..14] || (RndA[13..8] ⊕ RndB[15..10]) || RndB[9..0] || RndA[7..0]. */
+function sessionVector(label: Bytes, rndA: Bytes, rndB: Bytes): Bytes {
+  return [
+    ...label,
+    0x00, 0x01, 0x00, 0x80,
+    rndA[0], rndA[1],
+    ...xor(rndA.slice(2, 8), rndB.slice(0, 6)),
+    ...rndB.slice(6, 16),
+    ...rndA.slice(8, 16),
+  ];
+}
+
+export function deriveSessionKeys(key: Bytes, rndA: Bytes, rndB: Bytes): { enc: Bytes; mac: Bytes } {
+  return {
+    enc: cmac(key, sessionVector([0xa5, 0x5a], rndA, rndB)),
+    mac: cmac(key, sessionVector([0x5a, 0xa5], rndA, rndB)),
+  };
+}
+
+/** MACt: the 8 even-numbered bytes (S14, S12 … S0) of the CMAC, i.e. odd array indices. */
+export const truncateMac = (mac: Bytes) => mac.filter((_, i) => i % 2 === 1);
+
+/** Builds a CommMode.Full command APDU: header in plain, data encrypted, MACt appended. */
+export function fullModeCommand(session: SecureSession, cmd: number, header: Bytes, data: Bytes): Bytes {
+  const ivc = ecbEncrypt(session.enc, [0xa5, 0x5a, ...session.ti, ...le16(session.ctr), 0, 0, 0, 0, 0, 0, 0, 0]);
+  const encrypted = cbcEncrypt(session.enc, ivc, pad80(data));
+  const macT = truncateMac(cmac(session.mac, [cmd, ...le16(session.ctr), ...session.ti, ...header, ...encrypted]));
+  const body = [...header, ...encrypted, ...macT];
+  return [0x90, cmd, 0x00, 0x00, body.length, ...body, 0x00];
+}
+
+/** Checks the card's response MAC. Call with the counter already incremented for this command. */
+export function responseMacValid(session: SecureSession, returnCode: number, data: Bytes): boolean {
+  if (data.length < 8) return false;
+  const expected = truncateMac(cmac(session.mac, [returnCode, ...le16(session.ctr), ...session.ti, ...data.slice(0, -8)]));
+  return expected.every((b, i) => b === data[data.length - 8 + i]);
+}
+
+/**
+ * Factory settings for the NDEF file (file 02): CommMode plain, SDM off,
+ * access rights E0 EE = read/write/read-write by anyone, change with key 0.
+ */
+export const NDEF_FILE_FACTORY_SETTINGS: Bytes = [0x00, 0xe0, 0xee];

@@ -11,10 +11,11 @@ An open-source Expo (React Native) app for iOS and Android that reads and writes
 - **Write**: a link, text, phone number, email, or Wi-Fi network. The app shows the size in bytes before you write, checks it against the tag's capacity, and formats blank tags on Android. **Erase** writes an empty NDEF message.
 - **Diagnose**: explains why a tag can't be written or erased. It reads the chip's own settings:
   - **NTAG21x / MIFARE Ultralight**: exact chip model, permanent lock bits, the read-only flag, password protection (start page, read protection, attempt limit) and configuration lock.
-  - **NTAG 424 DNA**: which AES key guards writing and changing permissions, and whether SUN dynamic URLs are on. An opt-in **Test factory key** button checks whether the vendor left NXP's default key in place, which decides whether the card can be reset.
+  - **NTAG 424 DNA**: which AES key guards writing and changing permissions, and whether SUN dynamic URLs are on. An opt-in **Test factory key** button checks whether the vendor left NXP's default key in place.
   - **MIFARE Classic, DESFire and ISO 15693 tags**: identifies the type and explains what controls access.
 
-  Diagnose only reads; it never writes to the tag.
+  Diagnosing and testing the factory key only read the tag; they never write to it.
+- **Reset NTAG 424 DNA cards**: if the key that controls permissions is still the factory key, **Reset card** restores the NDEF file to factory settings and erases the old link. Afterwards SUN is off, anyone can read and write, and key 0 controls permission changes, so the card works like a new blank tag. The reset is an encrypted, signed ChangeFileSettings command (AuthenticateEV2First and CommMode.Full, per NXP AN12196), and the card rejects it if anything doesn't verify. Keys aren't changed.
 
 Built on [`react-native-nfc-manager`](https://github.com/revtel/react-native-nfc-manager) v4 and Expo Router native tabs (SDK 58).
 

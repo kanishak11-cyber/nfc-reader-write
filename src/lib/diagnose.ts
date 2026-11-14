@@ -9,14 +9,21 @@ import {
   analyzeType4,
   APDU,
   authPart2Payload,
-  authPart2Verify,
+  authPart2Result,
+  decryptRndB,
+  deriveSessionKeys,
   FACTORY_KEY,
+  fullModeCommand,
+  hex,
   identifyType2,
+  NDEF_FILE_FACTORY_SETTINGS,
+  responseMacValid,
   splitResponse,
   SW,
   type2ConfigPage,
   type Bytes,
   type Diagnosis,
+  type SecureSession,
 } from './chips';
 import { formatUid } from './ndef';
 import { withSession } from './nfc';
@@ -185,15 +192,79 @@ export function testFactoryKeys(keyNos: number[]): Promise<KeyTestResult> {
 
     const results: KeyTestResult['results'] = [];
     for (const keyNo of keyNos) {
-      const first = await apdu(APDU.authenticateEv2First(keyNo));
-      if (first.sw !== SW.MORE || first.data.length !== 16) {
-        results.push({ keyNo, isFactory: false });
-        continue;
-      }
-      const rndA = Array.from(getRandomBytes(16));
-      const second = await apdu(APDU.authenticatePart2(authPart2Payload(FACTORY_KEY, first.data, rndA)));
-      results.push({ keyNo, isFactory: second.sw === SW.DESFIRE_OK && authPart2Verify(FACTORY_KEY, second.data, rndA) });
+      results.push({ keyNo, isFactory: (await authenticateWithFactoryKey(keyNo)) !== null });
     }
     return { uid: formatUid(tag.id), results };
+  });
+}
+
+/** AuthenticateEV2First with the factory key. Returns a secure session, or null if the key was rejected. */
+async function authenticateWithFactoryKey(keyNo: number): Promise<SecureSession | null> {
+  const first = await apdu(APDU.authenticateEv2First(keyNo));
+  if (first.sw !== SW.MORE || first.data.length !== 16) return null;
+  const rndB = decryptRndB(FACTORY_KEY, first.data);
+  const rndA = Array.from(getRandomBytes(16));
+  const second = await apdu(APDU.authenticatePart2(authPart2Payload(FACTORY_KEY, rndB, rndA)));
+  if (second.sw !== SW.DESFIRE_OK) return null;
+  const { ok, ti } = authPart2Result(FACTORY_KEY, second.data, rndA);
+  if (!ok) return null;
+  return { ...deriveSessionKeys(FACTORY_KEY, rndA, rndB), ti, ctr: 0 };
+}
+
+/* Reset (NTAG 424 DNA with a factory change key) -------------------- */
+
+export interface ResetResult {
+  uid: string;
+  /** The old link was overwritten with an empty NDEF message. */
+  cleared: boolean;
+  /** The card's response MAC checked out (it applied the change either way when the status was OK). */
+  verified: boolean;
+}
+
+const ISO_SELECT_NDEF_FILE = [0x00, 0xa4, 0x00, 0x0c, 0x02, 0xe1, 0x04];
+/** UPDATE BINARY at offset 0: NLEN = 3, then an empty NDEF record (D0 00 00). */
+const ISO_WRITE_EMPTY_NDEF = [0x00, 0xd6, 0x00, 0x00, 0x05, 0x00, 0x03, 0xd0, 0x00, 0x00];
+
+/**
+ * Restores the NDEF file of an NTAG 424 DNA card to factory settings: plain
+ * communication, SUN/SDM off, read & write by anyone, permissions changeable with
+ * key 0. Needs the key that guards "change" to still be the factory key. Then
+ * overwrites the old link with an empty NDEF message. Keys are not changed.
+ */
+export function resetNtag424(expectedUid: string): Promise<ResetResult> {
+  return withSession(TECHS, PROMPT, 'Card reset', async (tech) => {
+    const tag: TagEvent = (await NfcManager.getTag({ readNdef: false })) ?? {};
+    const uid = formatUid(tag.id);
+    if (classify(tech, tag) !== 'type4') throw new Error('That isn’t an NTAG 424 DNA card.');
+    if (expectedUid && uid && uid !== expectedUid) {
+      throw new Error(`That’s a different card (${uid}). Diagnose it first, then reset it.`);
+    }
+    if ((await apdu(APDU.selectNdefApp)).sw !== SW.OK) throw new Error('Couldn’t open the card’s NDEF application.');
+
+    // Re-read the permissions to find which key may change them.
+    const settings = await apdu(APDU.getNdefFileSettings);
+    let changeKey = 0;
+    if (settings.sw === SW.DESFIRE_OK && settings.data.length >= 4) {
+      changeKey = settings.data[2] & 0x0f;
+      if (changeKey === 0xf) throw new Error('This card’s permissions are locked forever, so it can’t be reset.');
+      if (changeKey === 0xe) throw new Error('This card allows free permission changes, which this reset doesn’t handle.');
+    }
+
+    const session = await authenticateWithFactoryKey(changeKey);
+    if (!session) throw new Error(`Key ${changeKey} isn’t the factory key, so this card can’t be reset.`);
+
+    const change = await apdu(fullModeCommand(session, 0x5f, [0x02], NDEF_FILE_FACTORY_SETTINGS));
+    session.ctr += 1;
+    if (change.sw !== SW.DESFIRE_OK) {
+      throw new Error(`The card refused the reset (status ${hex([change.sw >> 8, change.sw & 0xff])}). Nothing was changed.`);
+    }
+    const verified = responseMacValid(session, 0x00, change.data);
+
+    // Writing is free now, so plain ISO commands can clear the old link.
+    let cleared = false;
+    if ((await apdu(ISO_SELECT_NDEF_FILE)).sw === SW.OK) {
+      cleared = (await apdu(ISO_WRITE_EMPTY_NDEF)).sw === SW.OK;
+    }
+    return { uid, cleared, verified };
   });
 }
