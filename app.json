@@ -2,7 +2,7 @@
   "expo": {
     "name": "NFC Read Write",
     "slug": "nfc-reader-write",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "scheme": "nfcreaderwrite",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -23,7 +23,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 10002
+      "versionCode": 10003
     },
     "web": {
       "favicon": "./assets/favicon.png"

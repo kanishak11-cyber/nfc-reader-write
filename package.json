@@ -1,6 +1,6 @@
 {
   "name": "nfc-reader-write",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Open-source NFC tag reader and writer for iOS and Android, built with Expo and React Native.",
   "license": "MIT",
   "author": "Kanishak Chaurasia",
