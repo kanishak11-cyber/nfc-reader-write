@@ -8,16 +8,34 @@
 An open-source Expo (React Native) app for iOS and Android that reads and writes NFC tags. It's free to use, modify and redistribute under the [MIT License](LICENSE).
 
 - **Read**: the tag's serial number (UID), type, technologies, storage used and capacity, whether it's locked, and every NDEF record, decoded. Supported records are text, links, phone, email, SMS, location, Wi-Fi, contact cards, smart posters, Android app records and raw MIME data. Links can be opened, values copied, and raw bytes shown.
-- **Write**: a link, text, phone number, email, or Wi-Fi network. The app shows the size in bytes before you write, checks it against the tag's capacity, and formats blank tags first: NTAG and MIFARE Ultralight chips on iPhone and Android, plus anything else Android can format. **Erase** writes an empty NDEF message.
+- **Write**: a link, text, phone number, email, or Wi-Fi network. The app shows the size in bytes before you write, checks it against the tag's capacity, and formats blank tags first: NTAG, MIFARE Ultralight and ISO 15693 (ICODE) tags on iPhone and Android, and MIFARE DESFire EV1+ cards on Android. When a tag can't be written on this phone, the error says why and which phone can handle it. **Erase** writes an empty NDEF message.
+- **Tag password**: lock an NTAG21x or MIFARE Ultralight EV1 tag with its built-in 32-bit password so nobody else can overwrite or erase it, and optionally can't read it. Enter the password to write, erase or unlock the tag later. It stops casual tampering; it isn't strong encryption, and a forgotten password can't be recovered.
+- **Secure NTAG 424 DNA cards**: replace the card's factory key with an AES-128 key derived from a passphrase and the card's serial number, and set it so anyone can read but only that key can write. No server and no stored keys: the key is rebuilt from the passphrase each time. Enter the passphrase to write, erase or unlock the card later. SUN dynamic URLs stay off because they need a server to verify.
+- **History**: every read, write, erase, lock and diagnosis is saved on the phone, newest first, with filters. Open an entry to copy its content or write it again. Tag contents are kept; tag passwords, card passphrases, keys and Wi-Fi passwords never are.
 - **Diagnose**: explains why a tag can't be written or erased. It reads the chip's own settings:
   - **NTAG21x / MIFARE Ultralight**: exact chip model, permanent lock bits, the read-only flag, password protection (start page, read protection, attempt limit) and configuration lock.
   - **NTAG 424 DNA**: which AES key guards writing and changing permissions, and whether SUN dynamic URLs are on. An opt-in **Test factory key** button checks whether the vendor left NXP's default key in place.
-  - **MIFARE Classic, DESFire and ISO 15693 tags**: identifies the type and explains what controls access.
+  - **MIFARE DESFire**: blank cards that can be formatted, and what controls access on the rest.
+  - **ISO 15693 (ICODE), FeliCa and MIFARE Classic**: identifies the type and maker, whether it's formatted and writable, and whether this phone can talk to it at all.
 
   Diagnosing and testing the factory key only read the tag; they never write to it.
 - **Reset NTAG 424 DNA cards**: if the key that controls permissions is still the factory key, **Reset card** restores the NDEF file to factory settings and erases the old link. Afterwards SUN is off, anyone can read and write, and key 0 controls permission changes, so the card works like a new blank tag. The reset is an encrypted, signed ChangeFileSettings command (AuthenticateEV2First and CommMode.Full, per NXP AN12196), and the card rejects it if anything doesn't verify. Keys aren't changed.
 
-Built on [`react-native-nfc-manager`](https://github.com/revtel/react-native-nfc-manager) v4 and Expo Router native tabs (SDK 58).
+## Supported tags
+
+| Tag | iPhone | Android |
+|---|---|---|
+| **NTAG213 / 215 / 216** | ✅ Read, write, diagnose. Blank tags are formatted | ✅ Same |
+| **MIFARE Ultralight** (EV1, C, original) | ✅ Read, write, diagnose. Blank tags are formatted (older chips need a second tap the first time) | ✅ Same |
+| **NTAG 424 DNA** | ✅ Read, write, diagnose, factory-key reset | ✅ Same |
+| **ICODE / ISO 15693** | ✅ Read, write. Blank tags are formatted; tags holding other data (library or shipping labels) are left alone | ✅ Same |
+| **MIFARE DESFire** (EV1, EV2, EV3) | ⚠️ Read and write once formatted. Format a blank card once on Android, then it works on iPhone | ✅ Read, write. Blank cards are formatted |
+| **FeliCa** | ⚠️ Read and write FeliCa Lite-S tags that are already NDEF formatted | ⚠️ Same |
+| **MIFARE Classic** | ❌ iPhones can't detect it | ⚠️ Only on phones with an NXP NFC chip, with factory keys or already formatted |
+
+No phone can format a blank FeliCa tag, or a card locked by its issuer's keys. The Diagnose tab shows this list for the phone you're using.
+
+Built on [`react-native-nfc-manager`](https://github.com/revtel/react-native-nfc-manager) v4 and Expo Router (SDK 58). The interface follows the TapClay design system: a Home hub with Read, Write, History, Erase, Protect and Diagnose, clay surfaces on lavender with a dark Midnight theme, and Plus Jakarta Sans.
 
 ## Download
 

@@ -1,10 +1,27 @@
 import { useState } from 'react';
 import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { DecodedRecord } from '@/lib/ndef';
-import { mono, radius, space, useTheme } from '@/lib/theme';
+import type { DecodedRecord, RecordKind } from '@/lib/ndef';
+import { radius, space, type, useTheme } from '@/lib/theme';
 
-import { Button, Card, CopyButton } from './ui';
+import type { IconName } from './Icon';
+import { Button, Card, CopyButton, IconTile } from './ui';
+
+const KIND_ICON: Partial<Record<RecordKind, IconName>> = {
+  text: 'text',
+  link: 'link',
+  uri: 'link',
+  poster: 'link',
+  phone: 'phone',
+  sms: 'phone',
+  email: 'user',
+  contact: 'user',
+  wifi: 'wifi',
+};
+
+export function recordIcon(kind: string): IconName {
+  return KIND_ICON[kind as RecordKind] ?? 'code';
+}
 
 export function RecordCard({ record, index }: { record: DecodedRecord; index: number }) {
   const t = useTheme();
@@ -16,7 +33,7 @@ export function RecordCard({ record, index }: { record: DecodedRecord; index: nu
     try {
       await Linking.openURL(record.url);
     } catch {
-      Alert.alert('Can’t open', `No app on this device can open:\n${record.url}`);
+      Alert.alert('Can’t open', `No app on this phone can open:\n${record.url}`);
     }
   };
 
@@ -25,13 +42,17 @@ export function RecordCard({ record, index }: { record: DecodedRecord; index: nu
   return (
     <Card>
       <View style={styles.header}>
-        <View style={[styles.badge, { backgroundColor: t.accentSoft }]}>
-          <Text style={[styles.badgeText, { color: t.accent }]}>{record.title}</Text>
+        <IconTile icon={recordIcon(record.kind)} />
+        <View style={{ flex: 1 }}>
+          <Text style={[type.micro, { color: t.inkMuted }]}>Record {index + 1}</Text>
+          <Text style={[type.bodyStrong, { color: t.ink }]} numberOfLines={1}>
+            {record.title}
+          </Text>
         </View>
-        <Text style={[styles.index, { color: t.textSubtle }]}>Record {index + 1}</Text>
+        {hasValue ? <CopyButton value={record.value} /> : null}
       </View>
 
-      <Text selectable style={[styles.value, { color: record.kind === 'empty' ? t.textMuted : t.text }]}>
+      <Text selectable style={[type.body, { color: record.kind === 'empty' ? t.inkMuted : t.ink }]}>
         {record.value}
       </Text>
 
@@ -39,13 +60,13 @@ export function RecordCard({ record, index }: { record: DecodedRecord; index: nu
         <View style={{ gap: space.xs }}>
           {record.details.map((d) => (
             <View key={d.label} style={styles.detail}>
-              <Text style={[styles.detailLabel, { color: t.textMuted }]}>{d.label}</Text>
+              <Text style={[type.caption, { color: t.inkMuted, width: 96 }]}>{d.label}</Text>
               {d.secret && !revealed[d.label] ? (
-                <Pressable onPress={() => setRevealed((r) => ({ ...r, [d.label]: true }))} hitSlop={8}>
-                  <Text style={[styles.detailValue, { color: t.accent }]}>Show</Text>
+                <Pressable onPress={() => setRevealed((r) => ({ ...r, [d.label]: true }))} hitSlop={8} accessibilityRole="button">
+                  <Text style={[type.caption, { color: t.violetInk, fontFamily: type.micro.fontFamily }]}>Show</Text>
                 </Pressable>
               ) : (
-                <Text selectable style={[styles.detailValue, { color: t.text }]}>
+                <Text selectable style={[type.caption, { color: t.ink, flex: 1 }]}>
                   {d.value}
                 </Text>
               )}
@@ -55,34 +76,33 @@ export function RecordCard({ record, index }: { record: DecodedRecord; index: nu
       ) : null}
 
       {record.children && record.children.length > 0 ? (
-        <View style={[styles.children, { borderColor: t.border }]}>
+        <View style={{ gap: 2 }}>
           {record.children.map((child, i) => (
-            <Text key={i} style={[styles.child, { color: t.textMuted }]}>
-              {child.title}: <Text style={{ color: t.text }}>{child.value}</Text>
+            <Text key={i} style={[type.caption, { color: t.inkMuted }]}>
+              {child.title}: <Text style={{ color: t.ink }}>{child.value}</Text>
             </Text>
           ))}
         </View>
       ) : null}
 
-      {(record.url || hasValue) && (
-        <View style={styles.actions}>
-          {record.url ? <Button label={openLabel(record)} size="sm" onPress={open} /> : null}
-          {hasValue ? <CopyButton value={record.value} /> : null}
+      {record.url ? (
+        <View style={{ alignItems: 'flex-start' }}>
+          <Button label={openLabel(record)} size="sm" variant="secondary" onPress={open} />
         </View>
-      )}
+      ) : null}
 
       <Pressable onPress={() => setShowRaw((s) => !s)} hitSlop={6} accessibilityRole="button">
-        <Text style={[styles.rawToggle, { color: t.textMuted }]}>{showRaw ? 'Hide raw data' : 'Show raw data'}</Text>
+        <Text style={[type.caption, { color: t.violetInk, fontFamily: type.micro.fontFamily }]}>{showRaw ? 'Hide raw data' : 'Show raw data'}</Text>
       </Pressable>
 
       {showRaw ? (
-        <View style={[styles.raw, { backgroundColor: t.surfaceMuted }]}>
+        <View style={[styles.raw, { backgroundColor: t.surfaceSunk, boxShadow: t.clayWell }]}>
           <RawLine label="TNF" value={record.raw.tnf} />
           <RawLine label="Type" value={record.raw.type || '—'} />
           {record.raw.id ? <RawLine label="ID" value={record.raw.id} /> : null}
           <RawLine label="Payload" value={`${record.raw.size} bytes`} />
           {record.raw.size > 0 ? (
-            <Text selectable style={[styles.hex, mono, { color: t.text }]}>
+            <Text selectable style={[type.mono, { color: t.ink, fontSize: 12, lineHeight: 18, marginTop: 4 }]}>
               {record.raw.payloadHex}
             </Text>
           ) : null}
@@ -95,8 +115,8 @@ export function RecordCard({ record, index }: { record: DecodedRecord; index: nu
 function RawLine({ label, value }: { label: string; value: string }) {
   const t = useTheme();
   return (
-    <Text style={[styles.rawLine, { color: t.textMuted }]}>
-      {label}: <Text style={[mono, { color: t.text }]}>{value}</Text>
+    <Text style={[type.caption, { color: t.inkMuted }]}>
+      {label}: <Text style={[type.mono, { color: t.ink }]}>{value}</Text>
     </Text>
   );
 }
@@ -117,19 +137,7 @@ function openLabel(record: DecodedRecord): string {
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  badge: { paddingHorizontal: space.sm + 2, paddingVertical: 4, borderRadius: radius.sm, maxWidth: '75%' },
-  badgeText: { fontSize: 13, fontWeight: '700' },
-  index: { fontSize: 13 },
-  value: { fontSize: 18, lineHeight: 25, fontWeight: '500' },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   detail: { flexDirection: 'row', gap: space.md },
-  detailLabel: { fontSize: 14, width: 96 },
-  detailValue: { fontSize: 14, flex: 1 },
-  children: { borderLeftWidth: 2, paddingLeft: space.md, gap: 2 },
-  child: { fontSize: 14 },
-  actions: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
-  rawToggle: { fontSize: 13, fontWeight: '600' },
   raw: { borderRadius: radius.sm, padding: space.md, gap: 4 },
-  rawLine: { fontSize: 13 },
-  hex: { fontSize: 12, lineHeight: 18, marginTop: 4 },
 });

@@ -224,10 +224,57 @@ export function analyzeType2(scan: Type2Scan): Diagnosis {
 
 function adviceForPassword(): string[] {
   return [
-    'Only the company that programmed the card has the password. If it has closed, the card can’t be reset.',
+    'If you know the password, enter it under “Tag password” in the Write tab to write, erase or unlock the tag.',
+    'Otherwise only whoever programmed the tag has it. If that company has closed, the tag can’t be reset.',
     'Don’t try guessing: many chips disable the password permanently after a few wrong tries.',
     'Replace it with a blank NTAG215 or NTAG216 and write your own link.',
   ];
+}
+
+/* Password protection (NTAG21x, Ultralight EV1) ---------------------- */
+/* Four pages from CFG0: [.., .., .., AUTH0], [ACCESS, ..], PWD, [PACK0, PACK1, ..].
+   Pages from AUTH0 up need PWD_AUTH to write, and to read too when ACCESS.PROT is set. */
+
+/** A tag password is exactly 4 bytes: 4 plain characters, or 8 hex digits. */
+export function parseTagPassword(input: string): Bytes | null {
+  const text = input.trim();
+  if (/^[0-9a-f]{8}$/i.test(text)) return text.match(/../g)!.map((b) => parseInt(b, 16));
+  if (/^[\x20-\x7e]{4}$/.test(text)) return [...text].map((c) => c.charCodeAt(0));
+  return null;
+}
+
+export interface Type2Protection {
+  /** A password is in force for at least part of the user memory. */
+  active: boolean;
+  readProtected: boolean;
+  /** The configuration pages are frozen for good. */
+  configLocked: boolean;
+  /** Wrong tries allowed before the chip blocks the password forever; 0 = unlimited. */
+  attemptLimit: number;
+}
+
+/** Reads the protection state from a READ of the CFG0 page (16 bytes). */
+export function type2Protection(chip: { userEnd: number }, config: Bytes): Type2Protection {
+  const access = config[4];
+  return {
+    active: config[3] <= chip.userEnd,
+    readProtected: bit(access, 7) === 1,
+    configLocked: bit(access, 6) === 1,
+    attemptLimit: access & 0x07 ? 2 ** (access & 0x07) : 0,
+  };
+}
+
+/**
+ * New CFG0 and CFG1 pages. Protecting starts at page 0, so the lock bits and capability
+ * container can't be tampered with either, and leaves the attempt limit off so a wrong
+ * password never bricks the tag. Other bytes are kept.
+ */
+export function type2ConfigPages(config: Bytes, protect: false | { readProtect: boolean }): { cfg0: Bytes; cfg1: Bytes } {
+  const access = (config[4] & 0x78) | (protect && protect.readProtect ? 0x80 : 0x00);
+  return {
+    cfg0: [config[0], config[1], config[2], protect ? 0x00 : 0xff],
+    cfg1: [access, config[5], config[6], config[7]],
+  };
 }
 
 /* Writing Type 2 memory directly ------------------------------------ */
@@ -271,10 +318,10 @@ export function type2BlankFormat(version: Bytes | null): { cc: Bytes; dataArea: 
 }
 
 /**
- * NDEF message TLV, then a terminator TLV when there's room, zero-padded to whole
- * 4-byte pages. Null when it doesn't fit the data area.
+ * NDEF message TLV (Type 2 and Type 5 tags), then a terminator TLV when there's room,
+ * zero-padded to whole 4-byte pages. Null when it doesn't fit the data area.
  */
-export function type2NdefTlv(message: Bytes, dataArea: number): Bytes | null {
+export function ndefTlv(message: Bytes, dataArea: number): Bytes | null {
   const length = message.length < 0xff ? [message.length] : [0xff, message.length >> 8, message.length & 0xff];
   const tlv = [0x03, ...length, ...message];
   if (tlv.length > dataArea) return null;
@@ -283,9 +330,105 @@ export function type2NdefTlv(message: Bytes, dataArea: number): Bytes | null {
   return tlv;
 }
 
-/** Largest NDEF message a data area holds: the TLV header is 2 bytes, or 4 from 255 bytes up. */
-export function type2MessageCapacity(dataArea: number): number {
+/** Largest NDEF message a TLV data area holds: the TLV header is 2 bytes, or 4 from 255 bytes up. */
+export function ndefTlvCapacity(dataArea: number): number {
   return Math.max(Math.min(0xfe, dataArea - 2), dataArea - 4);
+}
+
+/* ================================================================== */
+/* NFC Forum Type 5: ISO 15693 (NXP ICODE, ST, TI Tag-it…)             */
+/* ================================================================== */
+
+/** Request flags: high data rate, not addressed, so the one tag in the field answers. */
+export const ISO15693_FLAGS = 0x02;
+
+/** Block size and count from a Get System Information reply: [flags, info flags, UID×8, DSFID?, AFI?, size?, IC?]. */
+export function parseSystemInfo(response: Bytes | null): { blockSize: number; blockCount: number } | null {
+  if (!response || response.length < 10 || response[0] & 0x01) return null;
+  const info = response[1];
+  let i = 10;
+  if (info & 0x01) i++; // DSFID
+  if (info & 0x02) i++; // AFI
+  if (!(info & 0x04) || response.length < i + 2) return null;
+  return { blockCount: response[i] + 1, blockSize: (response[i + 1] & 0x1f) + 1 };
+}
+
+export type Type5Layout =
+  | { state: 'blank' }
+  | { state: 'formatted'; dataArea: number }
+  | { state: 'readOnly' }
+  | { state: 'foreign'; cc: Bytes };
+
+/**
+ * What block 0 says. Only a zeroed block counts as blank: ISO 15693 tags are also used
+ * as library, logistics and ticket labels, whose data must not be overwritten.
+ */
+export function type5Layout(block0: Bytes, totalBytes: number): Type5Layout {
+  const cc = block0.slice(0, 4);
+  if (cc.length === 4 && cc.every((b) => b === 0)) return { state: 'blank' };
+  // 4-byte capability container, mapping version 1.x. The 8-byte form (MLEN 0) isn't handled.
+  if (cc[0] !== 0xe1 || cc[1] >> 6 !== 1 || !cc[2]) return { state: 'foreign', cc };
+  if ((cc[1] & 0x03) !== 0) return { state: 'readOnly' };
+  return { state: 'formatted', dataArea: Math.min(cc[2] * 8, totalBytes) - 4 };
+}
+
+/**
+ * Capability container for a blank tag, as Android's NFC stack writes it: magic E1,
+ * version 1.0 with free read and write, memory size / 8 (capped at what a 4-byte CC can
+ * describe) and no optional features, so readers only use single-block reads.
+ */
+export function type5BlankFormat(blockSize: number, blockCount: number): { cc: Bytes; dataArea: number } {
+  const mlen = Math.min(Math.floor((blockSize * blockCount) / 8), 0xff);
+  return { cc: [0xe1, 0x40, mlen, 0x00], dataArea: mlen * 8 - 4 };
+}
+
+/* ================================================================== */
+/* MIFARE DESFire as an NFC Forum Type 4 tag                           */
+/* ================================================================== */
+/* Same commands Android's NFC stack (libnfc-nci rw_t4t.cc) sends when it formats a
+   DESFire EV1 or newer: no authentication, relying on the factory PICC settings that let
+   anyone create an application.                                                    */
+
+export const DESFIRE = {
+  selectPicc: [0x90, 0x5a, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00],
+  /** AID 000001 (sent LSB first), key settings 0F, one key with ISO file IDs (21), DF FID E105, DF name = NDEF app. */
+  createNdefApp: [0x90, 0xca, 0x00, 0x00, 0x0e, 0x01, 0x00, 0x00, 0x0f, 0x21, 0x05, 0xe1, 0xd2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01, 0x00],
+  selectNdefApp: [0x90, 0x5a, 0x00, 0x00, 0x03, 0x01, 0x00, 0x00, 0x00],
+  /** Standard data file 01, ISO FID E103, plain, free access, 15 bytes. */
+  createCcFile: [0x90, 0xcd, 0x00, 0x00, 0x09, 0x01, 0x03, 0xe1, 0x00, 0xee, 0xee, 0x0f, 0x00, 0x00, 0x00],
+  /** Standard data file 02, ISO FID E104, plain, free access. */
+  createNdefFile: (size: number) => [0x90, 0xcd, 0x00, 0x00, 0x09, 0x02, 0x04, 0xe1, 0x00, 0xee, 0xee, size & 0xff, (size >> 8) & 0xff, 0x00, 0x00],
+  /** ReadData: all 15 bytes of the CC file. */
+  readCc: [0x90, 0xbd, 0x00, 0x00, 0x07, 0x01, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00],
+  writeCc: (ndefFileSize: number) => [0x90, 0x3d, 0x00, 0x00, 0x16, 0x01, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, ...desfireCc(ndefFileSize), 0x00],
+};
+
+
+/** Type 4 capability container, mapping version 2.0, NDEF file E104 with free read and write. */
+export function desfireCc(ndefFileSize: number): Bytes {
+  return [0x00, 0x0f, 0x20, 0x00, 0x3b, 0x00, 0x34, 0x04, 0x06, 0xe1, 0x04, ndefFileSize >> 8, ndefFileSize & 0xff, 0x00, 0x00];
+}
+
+/**
+ * NDEF file size for a DESFire EV1+ from GetVersion's software frame
+ * [vendor, type, subtype, major, minor, storage, protocol], the way Android sizes it.
+ * Null for chips this can't format: DESFire EV0 (major version 0) or an unknown size.
+ */
+export function desfireNdefFileSize(hardware: Bytes, software: Bytes): number | null {
+  if (hardware.length < 7 || software.length < 7 || hardware[0] !== 0x04 || hardware[1] !== 0x01) return null;
+  if (software[3] < 0x01) return null;
+  switch (software[5]) {
+    case 0x16:
+      return 2048;
+    case 0x18:
+      return 4096;
+    case 0x1a:
+    case 0x1c:
+    case 0x1e:
+      return 7680; // Android's 8K size; larger cards get the same.
+    default:
+      return null;
+  }
 }
 
 /* ================================================================== */
@@ -295,6 +438,7 @@ export function type2MessageCapacity(dataArea: number): number {
 export const APDU = {
   selectNdefApp: [0x00, 0xa4, 0x04, 0x00, 0x07, 0xd2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01, 0x00],
   selectCcFile: [0x00, 0xa4, 0x00, 0x0c, 0x02, 0xe1, 0x03],
+  selectNdefFile: [0x00, 0xa4, 0x00, 0x0c, 0x02, 0xe1, 0x04],
   readCc: [0x00, 0xb0, 0x00, 0x00, 0x0f],
   getVersion: [0x90, 0x60, 0x00, 0x00, 0x00],
   additionalFrame: [0x90, 0xaf, 0x00, 0x00, 0x00],
@@ -311,7 +455,15 @@ export function splitResponse(response: Bytes): { data: Bytes; sw: number } {
   return { data: r.slice(0, -2), sw: (r[r.length - 2] << 8) | r[r.length - 1] };
 }
 
-export const SW = { OK: 0x9000, DESFIRE_OK: 0x9100, MORE: 0x91af, AUTH_ERROR: 0x91ae, PERMISSION_DENIED: 0x919d } as const;
+export const SW = {
+  OK: 0x9000,
+  DESFIRE_OK: 0x9100,
+  MORE: 0x91af,
+  AUTH_ERROR: 0x91ae,
+  PERMISSION_DENIED: 0x919d,
+  DUPLICATE: 0x91de,
+  OUT_OF_MEMORY: 0x910e,
+} as const;
 
 export interface Type4Scan {
   ndefApp: boolean;
@@ -342,6 +494,21 @@ export function analyzeType4(scan: Type4Scan): Diagnosis {
   const named = identifyType4(scan.version);
   const chip = named ?? 'ISO 14443-4 smart card';
   const findings: Finding[] = [{ label: 'Chip', value: chip }];
+
+  if (!scan.ndefApp && named === 'MIFARE DESFire' && scan.version && scan.version[3] >= 0x01) {
+    return {
+      chip,
+      verdict: 'writable',
+      headline: 'Blank DESFire card',
+      explanation:
+        'This MIFARE DESFire card has no NFC data area yet. One can be added as long as its issuer didn’t lock card-level changes with a master key.',
+      advice: [
+        'On Android: write anything in the Write tab and the card is formatted first.',
+        'iPhones can’t format DESFire. Format it once on an Android phone; after that it reads and writes on iPhone too.',
+      ],
+      findings,
+    };
+  }
 
   if (!scan.ndefApp) {
     return {
@@ -414,6 +581,7 @@ export function analyzeType4(scan: Type4Scan): Diagnosis {
       explanation:
         `This is a secure NTAG 424 DNA chip. Its link can only be changed by someone holding a secret 128-bit AES key, which was set by the company that issued it.${sdm ? ' The link changes on every tap (SUN), so the company’s server can check the card is genuine.' : ''} Apps that say “Writable: Yes” are only reading the NDEF container, not these permissions.`,
       advice: [
+        'If you secured this card with this app, enter your passphrase under “Secure card” in the Write tab to write, erase or unlock it.',
         'Some vendors never change NXP’s factory key. “Test factory key” below checks that. If it matches, you can reset the card and reuse it.',
         ...replaceAdvice(sdm),
       ],
@@ -481,8 +649,23 @@ function replaceAdvice(sdm: boolean): string[] {
 /* Other technologies                                                  */
 /* ================================================================== */
 
-export function analyzeClassic(opts: { formattable: boolean; ndefWritable: boolean | null }): Diagnosis {
+export function analyzeClassic(opts: { phoneSupported: boolean; formattable: boolean; ndefWritable: boolean | null }): Diagnosis {
   const findings: Finding[] = [{ label: 'Chip', value: 'MIFARE Classic' }];
+  if (!opts.phoneSupported && !opts.formattable && opts.ndefWritable === null) {
+    findings.push({ label: 'This phone', value: 'Can’t read MIFARE Classic', tone: 'warn' });
+    return {
+      chip: 'MIFARE Classic',
+      verdict: 'unknown',
+      headline: 'This phone can’t read MIFARE Classic',
+      explanation:
+        'MIFARE Classic uses NXP’s own protocol, and only phones with an NXP NFC chip can talk to it. This phone has a different NFC chip, so it can only see the card’s serial number.',
+      advice: [
+        'Check or write this card on an Android phone with an NXP NFC chip.',
+        'Even after it’s written there, it only works on phones like that. iPhones never read MIFARE Classic. An NTAG215 or NTAG216 works everywhere.',
+      ],
+      findings,
+    };
+  }
   if (opts.formattable) {
     return {
       chip: 'MIFARE Classic',
@@ -502,6 +685,88 @@ export function analyzeClassic(opts: { formattable: boolean; ndefWritable: boole
       ? 'Android can write NDEF data to this card.'
       : 'MIFARE Classic memory is guarded by 48-bit sector keys. Without the issuer’s keys this card can’t be rewritten. iPhones can’t write MIFARE Classic at all.',
     advice: opts.ndefWritable ? ['Use the Write tab on Android.'] : ['Replace it with a blank NTAG215 or NTAG216, which work on every phone.'],
+    findings,
+  };
+}
+
+const ISO15693_MAKERS: Record<number, string> = {
+  0x02: 'ST',
+  0x04: 'NXP',
+  0x05: 'Infineon',
+  0x07: 'Texas Instruments',
+  0x08: 'Fujitsu',
+  0x16: 'EM Microelectronic',
+};
+
+/**
+ * Names an ISO 15693 tag from its UID (E0, manufacturer, …). Phones differ in byte order,
+ * so either end may hold the E0.
+ */
+export function iso15693ChipName(id: string | undefined): string {
+  const bytes = (id ?? '').match(/[0-9a-f]{2}/gi)?.map((b) => parseInt(b, 16)) ?? [];
+  const uid = bytes[0] === 0xe0 ? bytes : bytes[bytes.length - 1] === 0xe0 ? [...bytes].reverse() : null;
+  if (!uid || uid.length !== 8) return 'ISO 15693 (NFC-V) tag';
+  if (uid[1] === 0x04 && uid[2] === 0x01) return 'NXP ICODE';
+  const maker = ISO15693_MAKERS[uid[1]];
+  return maker ? `${maker} ISO 15693 tag` : 'ISO 15693 (NFC-V) tag';
+}
+
+/** iOS reports the system code the FeliCa tag answered to. */
+export function felicaChipName(systemCode: string | undefined): string {
+  switch (systemCode?.toUpperCase()) {
+    case '12FC':
+      return 'FeliCa (NDEF)';
+    case '88B4':
+      return 'FeliCa Lite-S';
+    default:
+      return 'FeliCa';
+  }
+}
+
+export type NdefState = 'writable' | 'readOnly' | 'none' | null;
+
+/** ISO 15693 (ICODE…) and FeliCa tags: what the phone's NDEF layer reports. */
+export function analyzeNdefTag(family: 'iso15693' | 'felica', chip: string, state: NdefState, capacity: number | null): Diagnosis {
+  const findings: Finding[] = [{ label: 'Chip', value: chip }];
+  if (capacity) findings.push({ label: 'NDEF capacity', value: `${capacity} bytes` });
+  if (state === 'writable') {
+    return {
+      chip,
+      verdict: 'writable',
+      headline: 'Writable',
+      explanation: 'The tag is formatted for NDEF and allows writing.',
+      advice: ['Try writing again in the Write tab, and keep the phone still until it finishes.'],
+      findings,
+    };
+  }
+  if (state === 'readOnly') {
+    return {
+      chip,
+      verdict: 'locked',
+      headline: 'Read-only',
+      explanation: 'The tag’s NDEF data is marked read-only.',
+      advice: ['Replace it with a blank NTAG215 or NTAG216.'],
+      findings,
+    };
+  }
+  if (family === 'iso15693') {
+    return {
+      chip,
+      verdict: state === 'none' ? 'writable' : 'unknown',
+      headline: state === 'none' ? 'Not formatted yet' : 'Not checked in detail',
+      explanation:
+        'This ISO 15693 tag has no NDEF data area yet. If its memory is blank, the app can format it; tags that hold other data, like library or shipping labels, are left alone.',
+      advice: ['Write anything in the Write tab and a blank tag is formatted first, on iPhone and Android.'],
+      findings,
+    };
+  }
+  return {
+    chip,
+    verdict: 'unknown',
+    headline: 'Not formatted for NDEF',
+    explanation:
+      'This FeliCa tag isn’t set up to hold NFC data. Phones can’t format FeliCa: that needs a FeliCa reader on a computer. Transit and payment cards (Suica, Octopus and so on) can never be formatted.',
+    advice: ['Buy FeliCa Lite-S tags sold as “NDEF formatted”, or use an NTAG215 or NTAG216 instead.'],
     findings,
   };
 }
@@ -651,3 +916,17 @@ export function responseMacValid(session: SecureSession, returnCode: number, dat
  * access rights E0 EE = read/write/read-write by anyone, change with key 0.
  */
 export const NDEF_FILE_FACTORY_SETTINGS: Bytes = [0x00, 0xe0, 0xee];
+
+/** Same file, secured: plain communication, SDM off, read by anyone, write and change only with key 0. */
+export const NDEF_FILE_SECURED_SETTINGS: Bytes = [0x00, 0x00, 0xe0];
+
+/** ChangeKey data for key 0, the key the session is signed in with: new key, then its version. */
+export const changeKey0Data = (newKey: Bytes, version: number): Bytes => [...newKey, version];
+
+/**
+ * Per-card AES key: AES-CMAC of the card's UID under the stretched passphrase, so every
+ * card gets its own key and one card's key says nothing about another's.
+ */
+export function cardKey(stretchedPassphrase: Bytes, uid: Bytes): Bytes {
+  return cmac(stretchedPassphrase.slice(0, 16), [...'nfc-reader-write/ntag424/v1'].map((ch) => ch.charCodeAt(0)).concat(uid));
+}

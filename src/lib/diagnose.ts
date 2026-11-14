@@ -1,10 +1,11 @@
 import { getRandomBytes } from 'expo-crypto';
 import { Platform } from 'react-native';
-import NfcManager, { NfcTech, type TagEvent } from 'react-native-nfc-manager';
+import NfcManager, { NdefStatus, NfcTech, type TagEvent } from 'react-native-nfc-manager';
 
 import {
   analyzeClassic,
   analyzeGeneric,
+  analyzeNdefTag,
   analyzeType2,
   analyzeType4,
   APDU,
@@ -14,20 +15,23 @@ import {
   decryptRndB,
   deriveSessionKeys,
   FACTORY_KEY,
+  felicaChipName,
   fullModeCommand,
   hex,
   identifyType2,
+  iso15693ChipName,
   NDEF_FILE_FACTORY_SETTINGS,
   responseMacValid,
-  splitResponse,
   SW,
   type2ConfigPage,
   type Bytes,
   type Diagnosis,
+  type NdefState,
   type SecureSession,
 } from './chips';
 import { formatUid } from './ndef';
-import { transceiveNfcA as nfcA, withSession } from './nfc';
+import { apdu, transceiveNfcA as nfcA } from './format';
+import { withSession } from './nfc';
 
 export type { Diagnosis } from './chips';
 
@@ -42,21 +46,11 @@ export interface DiagnosisResult extends Diagnosis {
  * session that reports the family itself.
  */
 const TECHS = Platform.select({
-  ios: [NfcTech.MifareIOS, NfcTech.IsoDep, NfcTech.Iso15693IOS],
+  ios: [NfcTech.MifareIOS, NfcTech.IsoDep, NfcTech.Iso15693IOS, NfcTech.FelicaIOS],
   default: [NfcTech.IsoDep, NfcTech.NfcA, NfcTech.NfcV, NfcTech.NfcB, NfcTech.NfcF],
 });
 
 const PROMPT = 'Hold the top of your iPhone near the tag and keep it still.';
-
-/* Transport ------------------------------------------------------- */
-
-async function apdu(command: Bytes): Promise<{ data: Bytes; sw: number }> {
-  try {
-    return splitResponse(await NfcManager.isoDepHandler.transceive(command));
-  } catch {
-    return { data: [], sw: 0 };
-  }
-}
 
 /* Diagnose -------------------------------------------------------- */
 
@@ -76,30 +70,45 @@ export function diagnoseTag(): Promise<DiagnosisResult> {
         break;
       case 'classic':
         diagnosis = analyzeClassic({
+          // Only phones with an NXP NFC chip list MifareClassic; others can't talk to these cards at all.
+          phoneSupported: tag.techTypes?.some((t) => t.endsWith('MifareClassic')) ?? false,
           formattable: tag.techTypes?.some((t) => t.endsWith('NdefFormatable')) ?? false,
           ndefWritable: tag.isWritable ?? null,
         });
         break;
       case 'nfcv':
-        diagnosis = analyzeGeneric('ISO 15693 (NFC-V) tag', tag.isWritable ?? null);
+        diagnosis = analyzeNdefTag('iso15693', iso15693ChipName(tag.id), ...(await ndefState()));
+        break;
+      case 'felica':
+        diagnosis = analyzeNdefTag('felica', felicaChipName(tag.systemCode), ...(await ndefState()));
         break;
       default:
         diagnosis = analyzeGeneric(tech ? `${tech} tag` : 'Unknown tag', tag.isWritable ?? null);
     }
 
-    return { ...diagnosis, uid: formatUid(tag.id), scannedAt: Date.now() };
+    return { ...diagnosis, uid: formatUid(tag.id ?? tag.idm), scannedAt: Date.now() };
   });
 }
 
-function classify(tech: NfcTech | null, tag: TagEvent): 'type2' | 'type4' | 'classic' | 'nfcv' | 'other' {
+/** What the phone's NDEF layer says about the tag, and its capacity. */
+async function ndefState(): Promise<[NdefState, number | null]> {
+  const status = await NfcManager.ndefHandler.getNdefStatus().catch(() => null);
+  if (!status) return [null, null];
+  if (status.status === NdefStatus.NotSupported) return ['none', null];
+  return [status.status === NdefStatus.ReadWrite ? 'writable' : 'readOnly', status.capacity || null];
+}
+
+export function classify(tech: NfcTech | null, tag: TagEvent): 'type2' | 'type4' | 'classic' | 'nfcv' | 'felica' | 'other' {
   if (Platform.OS === 'ios') {
     if (tag.tech === 'IsoDep') return 'type4';
     if (tag.tech === 'mifare') return 'type2';
     if (tag.tech === 'iso15693') return 'nfcv';
+    if (tag.tech === 'felica') return 'felica';
     return 'other';
   }
   if (tech === NfcTech.IsoDep) return 'type4';
   if (tech === NfcTech.NfcV) return 'nfcv';
+  if (tech === NfcTech.NfcF) return 'felica';
   if (tech === NfcTech.NfcA) {
     const isClassic =
       tag.techTypes?.some((t) => t.endsWith('MifareClassic')) || (tag.sak != null && CLASSIC_SAKS.has(tag.sak));
@@ -114,7 +123,14 @@ function classify(tech: NfcTech | null, tag: TagEvent): 'type2' | 'type4' | 'cla
  */
 async function diagnoseType2(): Promise<Diagnosis> {
   const header = await nfcA([0x30, 0x00]);
-  if (!header) return analyzeType2({ header: null, version: null, config: null, configBlocked: false });
+  if (!header) {
+    // iOS reports DESFire and MIFARE Plus as "mifare" too. Their GetVersion reply is AF + hardware info.
+    const native = await nfcA([0x60]);
+    if (native && native[0] === 0xaf && native.length >= 8) {
+      return analyzeType4({ ndefApp: false, cc: null, version: native.slice(1, 8), fileSettings: null, fileSettingsSw: null });
+    }
+    return analyzeType2({ header: null, version: null, config: null, configBlocked: false });
+  }
 
   const version = await nfcA([0x60]);
   const chip = identifyType2(version);
@@ -181,23 +197,23 @@ export function testFactoryKeys(keyNos: number[]): Promise<KeyTestResult> {
 
     const results: KeyTestResult['results'] = [];
     for (const keyNo of keyNos) {
-      results.push({ keyNo, isFactory: (await authenticateWithFactoryKey(keyNo)) !== null });
+      results.push({ keyNo, isFactory: (await authenticateEv2(keyNo)) !== null });
     }
     return { uid: formatUid(tag.id), results };
   });
 }
 
-/** AuthenticateEV2First with the factory key. Returns a secure session, or null if the key was rejected. */
-async function authenticateWithFactoryKey(keyNo: number): Promise<SecureSession | null> {
+/** AuthenticateEV2First. Returns a secure session, or null if the card rejected the key. */
+export async function authenticateEv2(keyNo: number, key: Bytes = FACTORY_KEY): Promise<SecureSession | null> {
   const first = await apdu(APDU.authenticateEv2First(keyNo));
   if (first.sw !== SW.MORE || first.data.length !== 16) return null;
-  const rndB = decryptRndB(FACTORY_KEY, first.data);
+  const rndB = decryptRndB(key, first.data);
   const rndA = Array.from(getRandomBytes(16));
-  const second = await apdu(APDU.authenticatePart2(authPart2Payload(FACTORY_KEY, rndB, rndA)));
+  const second = await apdu(APDU.authenticatePart2(authPart2Payload(key, rndB, rndA)));
   if (second.sw !== SW.DESFIRE_OK) return null;
-  const { ok, ti } = authPart2Result(FACTORY_KEY, second.data, rndA);
+  const { ok, ti } = authPart2Result(key, second.data, rndA);
   if (!ok) return null;
-  return { ...deriveSessionKeys(FACTORY_KEY, rndA, rndB), ti, ctr: 0 };
+  return { ...deriveSessionKeys(key, rndA, rndB), ti, ctr: 0 };
 }
 
 /* Reset (NTAG 424 DNA with a factory change key) -------------------- */
@@ -210,7 +226,6 @@ export interface ResetResult {
   verified: boolean;
 }
 
-const ISO_SELECT_NDEF_FILE = [0x00, 0xa4, 0x00, 0x0c, 0x02, 0xe1, 0x04];
 /** UPDATE BINARY at offset 0: NLEN = 3, then an empty NDEF record (D0 00 00). */
 const ISO_WRITE_EMPTY_NDEF = [0x00, 0xd6, 0x00, 0x00, 0x05, 0x00, 0x03, 0xd0, 0x00, 0x00];
 
@@ -239,7 +254,7 @@ export function resetNtag424(expectedUid: string): Promise<ResetResult> {
       if (changeKey === 0xe) throw new Error('This card allows free permission changes, which this reset doesn’t handle.');
     }
 
-    const session = await authenticateWithFactoryKey(changeKey);
+    const session = await authenticateEv2(changeKey);
     if (!session) throw new Error(`Key ${changeKey} isn’t the factory key, so this card can’t be reset.`);
 
     const change = await apdu(fullModeCommand(session, 0x5f, [0x02], NDEF_FILE_FACTORY_SETTINGS));
@@ -251,7 +266,7 @@ export function resetNtag424(expectedUid: string): Promise<ResetResult> {
 
     // Writing is free now, so plain ISO commands can clear the old link.
     let cleared = false;
-    if ((await apdu(ISO_SELECT_NDEF_FILE)).sw === SW.OK) {
+    if ((await apdu(APDU.selectNdefFile)).sw === SW.OK) {
       cleared = (await apdu(ISO_WRITE_EMPTY_NDEF)).sw === SW.OK;
     }
     return { uid, cleared, verified };

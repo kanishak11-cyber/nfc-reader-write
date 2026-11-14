@@ -4,18 +4,13 @@ import { Alert, Platform, Text, View } from 'react-native';
 
 import { NfcStatus } from '@/components/NfcStatus';
 import { ScanSheet } from '@/components/ScanSheet';
-import { Button, Card, InfoRow, Notice, Screen, SectionLabel } from '@/components/ui';
+import { Button, Caption, Card, InfoRow, Notice, OptionRow, Screen, SectionLabel } from '@/components/ui';
 import type { Verdict } from '@/lib/chips';
-import {
-  diagnoseTag,
-  resetNtag424,
-  testFactoryKeys,
-  type DiagnosisResult,
-  type KeyTestResult,
-  type ResetResult,
-} from '@/lib/diagnose';
+import { HOLD_HINT } from '@/lib/copy';
+import { diagnoseTag, resetNtag424, testFactoryKeys, type DiagnosisResult, type KeyTestResult, type ResetResult } from '@/lib/diagnose';
+import { addHistory } from '@/lib/history';
 import { cancelScan, ScanCancelled } from '@/lib/nfc';
-import { space, useTheme } from '@/lib/theme';
+import { space, type, useTheme } from '@/lib/theme';
 import { useNfcAvailability } from '@/lib/useNfcAvailability';
 
 const VERDICT_TONE: Record<Verdict, 'success' | 'danger' | 'warning' | 'info'> = {
@@ -60,6 +55,15 @@ export default function DiagnoseScreen() {
       setResult(r);
       setKeyTest(null);
       setReset(null);
+      addHistory({
+        action: 'diagnose',
+        ok: true,
+        title: `Diagnosed ${r.chip}`,
+        subtitle: r.headline,
+        uid: r.uid || undefined,
+        chip: r.chip,
+        details: r.findings.map((f) => ({ label: f.label, value: f.value })),
+      });
     });
 
   const testKeys = () => {
@@ -76,7 +80,11 @@ export default function DiagnoseScreen() {
         {
           text: 'Reset',
           style: 'destructive',
-          onPress: () => run('reset', 'Couldn’t reset the card', () => resetNtag424(result.uid), setReset),
+          onPress: () =>
+            run('reset', 'Couldn’t reset the card', () => resetNtag424(result.uid), (r) => {
+              setReset(r);
+              addHistory({ action: 'unsecure', ok: true, title: 'Reset a card', subtitle: r.uid, uid: r.uid || undefined, chip: 'NTAG 424 DNA' });
+            }),
         },
       ],
     );
@@ -89,16 +97,19 @@ export default function DiagnoseScreen() {
     (!keyTest.uid || keyTest.uid === result.uid);
 
   return (
-    <Screen title="Diagnose" subtitle="Find out why a tag can’t be written or erased.">
+    <Screen
+      title="Diagnose"
+      footer={
+        <Button
+          label={error ? 'Try again' : result ? 'Diagnose another tag' : 'Diagnose a tag'}
+          icon="wrench"
+          onPress={scan}
+          loading={busy === 'scan' && Platform.OS === 'ios'}
+          disabled={!ready || busy !== null}
+        />
+      }
+    >
       <NfcStatus availability={availability} />
-
-      <Button
-        label={result ? 'Diagnose another tag' : 'Diagnose a tag'}
-        size="lg"
-        onPress={scan}
-        loading={busy === 'scan' && Platform.OS === 'ios'}
-        disabled={!ready || busy !== null}
-      />
 
       {error ? <Notice tone="danger" title={error.title} message={error.message} /> : null}
 
@@ -107,10 +118,10 @@ export default function DiagnoseScreen() {
           tone="success"
           title="Card reset"
           message={[
-            reset.cleared ? 'The old link is gone and the card is blank.' : 'Permissions are reset. Use Erase in the Write tab to clear the old link.',
+            reset.cleared ? 'The old link is gone and the card is blank.' : 'Permissions are reset. Erase the card to clear the old link.',
             'Anyone can now write it, like a new tag. Its secure dynamic link is off.',
           ].join(' ')}
-          action={<Button label="Write a new link" size="sm" variant="secondary" onPress={() => router.navigate('/write')} />}
+          action={<Button label="Write a new link" size="sm" variant="secondary" onPress={() => router.push('/write')} />}
         />
       ) : null}
 
@@ -118,12 +129,8 @@ export default function DiagnoseScreen() {
         <>
           <Notice tone={VERDICT_TONE[result.verdict]} title={result.headline} message={result.explanation} />
 
-          <SectionLabel
-            right={<Text style={{ color: t.textSubtle, fontSize: 12 }}>{new Date(result.scannedAt).toLocaleTimeString()}</Text>}
-          >
-            Findings
-          </SectionLabel>
-          <Card style={{ paddingVertical: space.xs }}>
+          <SectionLabel>Findings</SectionLabel>
+          <Card style={{ paddingVertical: space.xs, gap: 0 }}>
             {result.uid ? <InfoRow label="Serial number (UID)" value={result.uid} monospace copyable /> : null}
             {result.findings.map((f, i) => (
               <InfoRow key={f.label} label={f.label} value={f.value} tone={f.tone} last={i === result.findings.length - 1} />
@@ -147,27 +154,22 @@ export default function DiagnoseScreen() {
           <Card style={{ gap: space.sm }}>
             {result.advice.map((line) => (
               <View key={line} style={{ flexDirection: 'row', gap: space.sm }}>
-                <Text style={{ color: t.textMuted, fontSize: 15, lineHeight: 22 }}>•</Text>
-                <Text style={{ color: t.text, fontSize: 15, lineHeight: 22, flex: 1 }}>{line}</Text>
+                <Text style={[type.body, { color: t.inkMuted }]}>•</Text>
+                <Text style={[type.body, { color: t.ink, flex: 1 }]}>{line}</Text>
               </View>
             ))}
           </Card>
         </>
       ) : !error && ready ? (
-        <Card>
-          <Text style={{ color: t.textMuted, fontSize: 15, lineHeight: 22 }}>
-            Reads the chip’s own settings: the exact chip model, permanent lock bits, password protection, and, on NTAG 424
-            DNA cards, which key guards writing. It only reads. Nothing on the tag is changed.
-          </Text>
-        </Card>
+        <Caption>
+          Reads the chip’s own settings: the exact chip model, permanent lock bits, password protection and, on NTAG 424 DNA cards, which key
+          guards writing. It only reads. Nothing on the tag is changed.
+        </Caption>
       ) : null}
 
-      <ScanSheet
-        visible={busy !== null}
-        title={busy ? SHEET_TITLE[busy] : ''}
-        message="Hold the tag against the back of your phone and keep it still until it finishes."
-        onCancel={cancelScan}
-      />
+      <OptionRow icon="layers" title="Supported tags" subtitle="What this phone can read, write and format" onPress={() => router.push('/supported')} />
+
+      <ScanSheet visible={busy !== null} title={busy ? SHEET_TITLE[busy] : ''} message={HOLD_HINT} onCancel={cancelScan} />
     </Screen>
   );
 }
@@ -191,7 +193,6 @@ function FactoryKeyCard({
   onTest: () => void;
   onReset: () => void;
 }) {
-  const t = useTheme();
   const keyList = keys.map((k) => `key ${k}`).join(' and ');
   const factory = test?.results.filter((r) => r.isFactory) ?? [];
   const otherCard = test && uid && test.uid && test.uid !== uid;
@@ -200,10 +201,10 @@ function FactoryKeyCard({
     <>
       <SectionLabel>Factory key</SectionLabel>
       <Card>
-        <Text style={{ color: t.textMuted, fontSize: 15, lineHeight: 22 }}>
-          Checks whether {keyList} still use NXP’s factory default (all zeros). Each check is a single sign-in attempt, and
-          nothing is written to the card.
-        </Text>
+        <Caption>
+          Checks whether {keyList} still use NXP’s factory default (all zeros). Each check is a single sign-in attempt, and nothing is written
+          to the card.
+        </Caption>
         {test ? (
           factory.length ? (
             <Notice
@@ -219,15 +220,13 @@ function FactoryKeyCard({
             <Notice
               tone="danger"
               title="The factory key doesn’t work"
-              message={`The vendor set their own secret ${keyList}. Without it, this card can’t be rewritten or reset by anyone.`}
+              message={`The card has its own secret ${keyList}. Without it, this card can’t be rewritten or reset.`}
             />
           )
         ) : null}
-        {otherCard ? (
-          <Text style={{ color: t.warning, fontSize: 13 }}>Note: this result is for a different card ({test!.uid}).</Text>
-        ) : null}
+        {otherCard ? <Notice tone="warning" icon="alert" title="Different card" message={`This result is for card ${test!.uid}.`} /> : null}
         {canReset ? (
-          <Button label="Reset card" variant="danger" onPress={onReset} loading={busy === 'reset' && Platform.OS === 'ios'} disabled={disabled} />
+          <Button label="Reset card" icon="trash" variant="danger" onPress={onReset} loading={busy === 'reset' && Platform.OS === 'ios'} disabled={disabled} />
         ) : null}
         <Button
           label={test ? 'Test again' : 'Test factory key'}

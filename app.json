@@ -40,6 +40,10 @@
             "D2760000850100",
             "D2760000850101"
           ],
+          "systemCodes": [
+            "12FC",
+            "88B4"
+          ],
           "includeNdefEntitlement": false
         }
       ],
