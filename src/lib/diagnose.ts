@@ -9,6 +9,7 @@ import {
   analyzeType4,
   APDU,
   authPart2Payload,
+  CLASSIC_SAKS,
   authPart2Result,
   decryptRndB,
   deriveSessionKeys,
@@ -26,7 +27,7 @@ import {
   type SecureSession,
 } from './chips';
 import { formatUid } from './ndef';
-import { withSession } from './nfc';
+import { transceiveNfcA as nfcA, withSession } from './nfc';
 
 export type { Diagnosis } from './chips';
 
@@ -45,21 +46,9 @@ const TECHS = Platform.select({
   default: [NfcTech.IsoDep, NfcTech.NfcA, NfcTech.NfcV, NfcTech.NfcB, NfcTech.NfcF],
 });
 
-const CLASSIC_SAKS = new Set([0x08, 0x09, 0x18, 0x19, 0x28, 0x38, 0x88]);
-
 const PROMPT = 'Hold the top of your iPhone near the tag and keep it still.';
 
 /* Transport ------------------------------------------------------- */
-
-/** Raw NFC-A (Type 2) command; resolves null when the chip NAKs or doesn't answer. */
-async function nfcA(command: Bytes): Promise<Bytes | null> {
-  try {
-    const response = await NfcManager.nfcAHandler.transceive(command);
-    return response.map((b) => b & 0xff);
-  } catch {
-    return null;
-  }
-}
 
 async function apdu(command: Bytes): Promise<{ data: Bytes; sw: number }> {
   try {

@@ -45,22 +45,27 @@ interface Type2Chip {
   cfg0?: number;
   /** Dynamic lock bytes page, right before CFG0 on chips that have one. */
   dynLock?: number;
+  /** NDEF data area size / 8, as NXP programs it into the capability container. */
+  ccSize: number;
 }
 
 /** Keyed by GET_VERSION bytes: product type, product subtype, storage size. */
 const TYPE2_CHIPS: Record<string, Type2Chip> = {
-  '04-01-0B': { name: 'NTAG210', userEnd: 0x0f, cfg0: 0x10 },
-  '04-01-0E': { name: 'NTAG212', userEnd: 0x23, dynLock: 0x24, cfg0: 0x25 },
-  '04-02-0F': { name: 'NTAG213', userEnd: 0x27, dynLock: 0x28, cfg0: 0x29 },
-  '04-02-11': { name: 'NTAG215', userEnd: 0x81, dynLock: 0x82, cfg0: 0x83 },
-  '04-02-13': { name: 'NTAG216', userEnd: 0xe1, dynLock: 0xe2, cfg0: 0xe3 },
-  '04-04-0F': { name: 'NTAG213 F', userEnd: 0x27, dynLock: 0x28, cfg0: 0x29 },
-  '04-04-13': { name: 'NTAG216 F', userEnd: 0xe1, dynLock: 0xe2, cfg0: 0xe3 },
-  '04-05-13': { name: 'NTAG I2C 1k', userEnd: 0xe1 },
-  '04-05-15': { name: 'NTAG I2C 2k', userEnd: 0xe1 },
-  '03-01-0B': { name: 'MIFARE Ultralight EV1 (48 bytes)', userEnd: 0x0f, cfg0: 0x10 },
-  '03-01-0E': { name: 'MIFARE Ultralight EV1 (128 bytes)', userEnd: 0x23, dynLock: 0x24, cfg0: 0x25 },
+  '04-01-0B': { name: 'NTAG210', userEnd: 0x0f, cfg0: 0x10, ccSize: 0x06 },
+  '04-01-0E': { name: 'NTAG212', userEnd: 0x23, dynLock: 0x24, cfg0: 0x25, ccSize: 0x10 },
+  '04-02-0F': { name: 'NTAG213', userEnd: 0x27, dynLock: 0x28, cfg0: 0x29, ccSize: 0x12 },
+  '04-02-11': { name: 'NTAG215', userEnd: 0x81, dynLock: 0x82, cfg0: 0x83, ccSize: 0x3e },
+  '04-02-13': { name: 'NTAG216', userEnd: 0xe1, dynLock: 0xe2, cfg0: 0xe3, ccSize: 0x6d },
+  '04-04-0F': { name: 'NTAG213 F', userEnd: 0x27, dynLock: 0x28, cfg0: 0x29, ccSize: 0x12 },
+  '04-04-13': { name: 'NTAG216 F', userEnd: 0xe1, dynLock: 0xe2, cfg0: 0xe3, ccSize: 0x6d },
+  '04-05-13': { name: 'NTAG I2C 1k', userEnd: 0xe1, ccSize: 0x6d },
+  '04-05-15': { name: 'NTAG I2C 2k', userEnd: 0xe1, ccSize: 0xea },
+  '03-01-0B': { name: 'MIFARE Ultralight EV1 (48 bytes)', userEnd: 0x0f, cfg0: 0x10, ccSize: 0x06 },
+  '03-01-0E': { name: 'MIFARE Ultralight EV1 (128 bytes)', userEnd: 0x23, dynLock: 0x24, cfg0: 0x25, ccSize: 0x10 },
 };
+
+/** SAK values of MIFARE Classic (and Classic-compatible) cards. */
+export const CLASSIC_SAKS = new Set([0x08, 0x09, 0x18, 0x19, 0x28, 0x38, 0x88]);
 
 export function identifyType2(version: Bytes | null): Type2Chip | null {
   if (!version || version.length < 8 || version[0] !== 0x00 || version[1] !== 0x04) return null;
@@ -105,16 +110,13 @@ export function analyzeType2(scan: Type2Scan): Diagnosis {
   }
 
   const h = scan.header;
-  const lock0 = h[10];
-  const lock1 = h[11];
   const cc = h.slice(12, 16);
   const formatted = cc[0] === 0xe1;
   const ccWrite = cc[3] & 0x0f;
 
-  const staticLocked: number[] = [];
-  for (let b = 4; b <= 7; b++) if (bit(lock0, b)) staticLocked.push(b);
-  for (let b = 0; b <= 7; b++) if (bit(lock1, b)) staticLocked.push(b + 8);
-  const ccPageLocked = bit(lock0, 3) === 1;
+  const locked = staticLockedPages(h);
+  const staticLocked = [...locked].filter((page) => page >= 4);
+  const ccPageLocked = locked.has(3);
 
   findings.push({
     label: 'NDEF data area',
@@ -213,7 +215,7 @@ export function analyzeType2(scan: Type2Scan): Diagnosis {
       ? 'No lock bits are set and there’s no password. You should be able to write or erase this tag in the Write tab.'
       : 'No lock bits are set, but this older chip can’t report whether it has a password.',
     advice: [
-      formatted ? 'Try writing again, and keep the phone still until it finishes.' : 'Writing on Android will format the tag first.',
+      formatted ? 'Try writing again, and keep the phone still until it finishes.' : 'Writing to it in the Write tab will format it first.',
       'If writing still fails, try another phone. iPhones and some Android phones struggle with certain tags.',
     ],
     findings,
@@ -226,6 +228,64 @@ function adviceForPassword(): string[] {
     'Don’t try guessing: many chips disable the password permanently after a few wrong tries.',
     'Replace it with a blank NTAG215 or NTAG216 and write your own link.',
   ];
+}
+
+/* Writing Type 2 memory directly ------------------------------------ */
+/* Used when the phone's own NDEF support gives up on a tag: iPhones can't format
+   factory-blank chips, and some Android phones don't offer to.                    */
+
+/** Pages 3–15 whose static lock bits are set, from a READ of page 0 (page 3 is the capability container). */
+export function staticLockedPages(header: Bytes): Set<number> {
+  const pages = new Set<number>();
+  for (let b = 3; b <= 7; b++) if (bit(header[10], b)) pages.add(b);
+  for (let b = 0; b <= 7; b++) if (bit(header[11], b)) pages.add(b + 8);
+  return pages;
+}
+
+export type Type2Layout =
+  | { state: 'blank' }
+  | { state: 'formatted'; dataArea: number }
+  | { state: 'readOnly' }
+  | { state: 'foreign'; cc: Bytes };
+
+/** What the capability container (page 3) says, from a READ of page 0. */
+export function type2Layout(header: Bytes): Type2Layout {
+  const cc = header.slice(12, 16);
+  if (cc.every((b) => b === 0)) return { state: 'blank' };
+  if (cc[0] !== 0xe1 || cc[1] >> 4 !== 1 || cc[2] === 0) return { state: 'foreign', cc };
+  if ((cc[3] & 0x0f) !== 0) return { state: 'readOnly' };
+  return { state: 'formatted', dataArea: cc[2] * 8 };
+}
+
+/**
+ * Capability container for a blank chip and the data area it declares. Chips we can't
+ * identify get 48 bytes, the least any Type 2 tag has, since the container is one-time
+ * programmable and can't be enlarged later.
+ */
+export function type2BlankFormat(version: Bytes | null): { cc: Bytes; dataArea: number } {
+  const chip = identifyType2(version);
+  const ccSize = chip?.ccSize ?? 0x06;
+  // NTAG I2C 2k declares more than sector 0 holds; only sector 0 is reachable without SECTOR_SELECT.
+  const dataArea = chip ? Math.min(ccSize * 8, (chip.userEnd - 3) * 4) : ccSize * 8;
+  return { cc: [0xe1, 0x10, ccSize, 0x00], dataArea };
+}
+
+/**
+ * NDEF message TLV, then a terminator TLV when there's room, zero-padded to whole
+ * 4-byte pages. Null when it doesn't fit the data area.
+ */
+export function type2NdefTlv(message: Bytes, dataArea: number): Bytes | null {
+  const length = message.length < 0xff ? [message.length] : [0xff, message.length >> 8, message.length & 0xff];
+  const tlv = [0x03, ...length, ...message];
+  if (tlv.length > dataArea) return null;
+  if (tlv.length < dataArea) tlv.push(0xfe);
+  while (tlv.length % 4) tlv.push(0x00);
+  return tlv;
+}
+
+/** Largest NDEF message a data area holds: the TLV header is 2 bytes, or 4 from 255 bytes up. */
+export function type2MessageCapacity(dataArea: number): number {
+  return Math.max(Math.min(0xfe, dataArea - 2), dataArea - 4);
 }
 
 /* ================================================================== */

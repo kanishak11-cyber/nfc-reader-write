@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import NfcManager, { NdefStatus, NfcError, NfcTech, type NdefRecord, type TagEvent } from 'react-native-nfc-manager';
 
+import { CLASSIC_SAKS, hex, staticLockedPages, type2BlankFormat, type2Layout, type2MessageCapacity, type2NdefTlv } from './chips';
 import { emptyMessage, encodeMessage, messageSize } from './ndef';
 
 export type NfcAvailability = 'checking' | 'ready' | 'disabled' | 'unsupported';
@@ -170,20 +171,28 @@ export interface WriteResult {
   formatted: boolean;
 }
 
+/**
+ * Android prefers its own NDEF support (Ndef, then NdefFormatable for blank tags). NfcA
+ * catches the tags it won't handle, so blank NTAG/Ultralight chips can be formatted by
+ * hand and anything else gets a specific explanation.
+ */
+const WRITE_TECHS_ANDROID = [NfcTech.Ndef, NfcTech.NdefFormatable, NfcTech.NfcA];
+
 export function writeRecords(records: NdefRecord[], successMessage = 'Written to tag'): Promise<WriteResult> {
   const bytes = encodeMessage(records);
-  // On Android, NdefFormatable lets us write to factory-blank tags by formatting them.
-  const techs = Platform.OS === 'android' ? [NfcTech.Ndef, NfcTech.NdefFormatable] : NfcTech.Ndef;
+  const techs = Platform.OS === 'android' ? WRITE_TECHS_ANDROID : NfcTech.Ndef;
 
   return withSession(techs, 'Hold the top of your iPhone near the tag to write.', successMessage, async (tech) => {
     if (tech === NfcTech.NdefFormatable) {
       await NfcManager.ndefFormatableHandlerAndroid.formatNdef(bytes);
       return { bytes: bytes.length, capacity: null, formatted: true };
     }
+    if (Platform.OS === 'android' && tech !== NfcTech.Ndef) return writeWithoutNdef(tech, bytes);
 
     const status = await NfcManager.ndefHandler.getNdefStatus().catch(() => null);
     if (status) {
-      if (status.status === NdefStatus.NotSupported) throw new Error('This tag doesn’t support NDEF, so it can’t be written.');
+      // iPhones report factory-blank chips as unsupported because they can't format them.
+      if (status.status === NdefStatus.NotSupported) return writeWithoutNdef(tech, bytes);
       if (status.status === NdefStatus.ReadOnly) throw new Error('This tag is locked (read-only).');
       if (status.capacity > 0 && bytes.length > status.capacity) {
         throw new Error(`Too much data: ${bytes.length} bytes, but this tag holds ${status.capacity}.`);
@@ -203,4 +212,146 @@ export function writeRecords(records: NdefRecord[], successMessage = 'Written to
 
 export function eraseTag(): Promise<WriteResult> {
   return writeRecords(emptyMessage(), 'Tag erased');
+}
+
+/* ------------------------------------------------------------------ */
+/* Tags the phone won't write as NDEF                                  */
+/* ------------------------------------------------------------------ */
+
+type TagKind = 'type2' | 'classic' | 'smartcard' | 'nfcv' | 'felica' | 'other';
+
+function tagKind(tech: NfcTech | null, tag: TagEvent): TagKind {
+  if (Platform.OS === 'ios') {
+    // iOS lists DESFire and MIFARE Plus as "mifare" too; they fail the Type 2 READ later.
+    if (tag.tech === 'mifare') return 'type2';
+    if (tag.tech === 'IsoDep') return 'smartcard';
+    if (tag.tech === 'iso15693') return 'nfcv';
+    if (tag.tech === 'felica') return 'felica';
+    return 'other';
+  }
+  const has = (name: string) => tag.techTypes?.some((t) => t.endsWith(`.${name}`)) ?? false;
+  if (has('MifareClassic') || (tag.sak != null && CLASSIC_SAKS.has(tag.sak))) return 'classic';
+  if (has('IsoDep')) return 'smartcard';
+  if (tech === NfcTech.NfcA) return 'type2';
+  if (has('NfcV')) return 'nfcv';
+  if (has('NfcF')) return 'felica';
+  return 'other';
+}
+
+const REPLACE = 'Use a blank NTAG213, NTAG215 or NTAG216 sticker or card instead.';
+
+const NOT_NDEF_MESSAGES: Record<Exclude<TagKind, 'type2'>, string> = {
+  // Android only: iPhones don't detect MIFARE Classic at all.
+  classic: `This is a MIFARE Classic card, and this phone can’t format it. Only phones with an NXP NFC chip can, and only while the card still uses its factory keys. ${REPLACE}`,
+  smartcard:
+    'This is a smart card that doesn’t share an NFC data area with the phone. Bank, transit, ID and access cards are like this, and so are secure tags (NTAG 424 DNA, DESFire) whose issuer restricted access. The Diagnose tab can tell which.',
+  nfcv: `This ISO 15693 (NFC-V) tag isn’t formatted for NDEF, and this app can’t format NFC-V tags yet. ${REPLACE}`,
+  felica: `This FeliCa tag isn’t formatted for NDEF, and phones can’t format FeliCa tags. ${REPLACE}`,
+  other: `This tag isn’t formatted for NDEF, and it’s not a type this app can format. The Diagnose tab can identify it. ${REPLACE}`,
+};
+
+async function writeWithoutNdef(tech: NfcTech | null, message: number[]): Promise<WriteResult> {
+  const tag: TagEvent = (await NfcManager.getTag({ readNdef: false }).catch(() => null)) ?? {};
+  const kind = tagKind(tech, tag);
+  if (kind !== 'type2') throw new Error(NOT_NDEF_MESSAGES[kind]);
+  return writeType2(message, tag.id ?? '');
+}
+
+/** Raw NFC-A (Type 2) command; null when the chip NAKs or doesn't answer. */
+export async function transceiveNfcA(command: number[]): Promise<number[] | null> {
+  try {
+    const response = await NfcManager.nfcAHandler.transceive(command);
+    return response.map((b) => b & 0xff);
+  } catch {
+    return null;
+  }
+}
+
+/** WRITE one 4-byte page. The chip answers a 4-bit ACK (0xA); some stacks pass back nothing. */
+async function writePage(page: number, data: number[]): Promise<boolean> {
+  const response = await transceiveNfcA([0xa2, page, ...data]);
+  return response !== null && (response.length === 0 || (response[0] & 0x0f) === 0x0a);
+}
+
+/** Reads back `expected` starting at `page`; READ returns four pages at a time. */
+async function verifyPages(page: number, expected: number[]): Promise<boolean> {
+  for (let offset = 0; offset < expected.length; offset += 16) {
+    const read = await transceiveNfcA([0x30, page + offset / 4]);
+    const want = expected.slice(offset, offset + 16);
+    if (!read || want.some((b, i) => read[i] !== b)) return false;
+  }
+  return true;
+}
+
+/**
+ * UIDs of older Ultralight chips (no GET_VERSION). They drop off after refusing it, so the
+ * next tap skips it and formats them with the 48 bytes every Type 2 tag has.
+ */
+const legacyType2 = new Set<string>();
+
+const PASSWORD_HINT = 'It may be protected by a password; the Diagnose tab can check.';
+
+/**
+ * Writes an NDEF message straight into NTAG/Ultralight memory: the NDEF TLV from page 4
+ * and, on a factory-blank chip, the capability container in page 3, which is written last
+ * so an interrupted write leaves the tag blank rather than half-formatted.
+ */
+async function writeType2(message: number[], uid: string): Promise<WriteResult> {
+  const header = await transceiveNfcA([0x30, 0x00]);
+  if (!header || header.length < 16) {
+    throw new Error(
+      `The tag isn’t formatted for NDEF and didn’t answer a standard memory read. It’s either password-protected or a MIFARE DESFire/Plus card, which can’t be formatted here. The Diagnose tab can tell which. ${REPLACE}`,
+    );
+  }
+
+  const layout = type2Layout(header);
+  if (layout.state === 'readOnly') throw new Error('This tag is locked (read-only).');
+  if (layout.state === 'foreign') {
+    throw new Error(
+      `This tag’s setup area holds non-NDEF data (${hex(layout.cc)}), like a game figure or a proprietary tag. That area can only be written once, so it can’t be formatted. ${REPLACE}`,
+    );
+  }
+
+  let dataArea: number;
+  let cc: number[] | null = null;
+  if (layout.state === 'formatted') {
+    dataArea = layout.dataArea;
+  } else {
+    let version: number[] | null = null;
+    if (!legacyType2.has(uid)) {
+      version = await transceiveNfcA([0x60]);
+      if (!version || version.length < 8) {
+        version = null;
+        // A refused command halts the chip on most phones; check it still answers.
+        if ((await transceiveNfcA([0x30, 0x00]))?.length !== 16) {
+          legacyType2.add(uid);
+          throw new Error('This is an older MIFARE Ultralight. Move it away from the phone, then write again to finish formatting it.');
+        }
+      }
+    }
+    ({ cc, dataArea } = type2BlankFormat(version));
+  }
+
+  const tlv = type2NdefTlv(message, dataArea);
+  const capacity = type2MessageCapacity(dataArea);
+  if (!tlv) throw new Error(`Too much data: ${message.length} bytes, but this tag holds ${capacity}.`);
+
+  const locked = staticLockedPages(header);
+  const lastPage = 3 + tlv.length / 4;
+  if ((cc && locked.has(3)) || [...locked].some((page) => page >= 4 && page <= lastPage)) {
+    throw new Error('This tag is locked (read-only).');
+  }
+
+  for (let i = 0; i < tlv.length; i += 4) {
+    if (!(await writePage(4 + i / 4, tlv.slice(i, i + 4)))) throw new Error(`The tag refused the write. ${PASSWORD_HINT}`);
+  }
+  if (!(await verifyPages(4, tlv))) throw new Error('The tag didn’t keep the data. Hold it still and try again.');
+
+  if (cc) {
+    if (!(await writePage(3, cc))) throw new Error(`The tag refused to be formatted. ${PASSWORD_HINT}`);
+    const check = await transceiveNfcA([0x30, 0x00]);
+    if (!check || cc.some((b, i) => check[12 + i] !== b)) throw new Error('The tag didn’t keep its format. Hold it still and try again.');
+  }
+
+  return { bytes: message.length, capacity, formatted: cc !== null };
 }
