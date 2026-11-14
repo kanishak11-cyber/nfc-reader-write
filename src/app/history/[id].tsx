@@ -1,39 +1,52 @@
+import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
-import { Alert, Linking, Text, View } from 'react-native';
+import { useState } from 'react';
+import { Alert, Linking, StyleSheet, Text, View } from 'react-native';
 
+import { ConfirmSheet, Lead, timeOf } from '@/components/flow';
 import { recordIcon } from '@/components/RecordCard';
-import { Badge, Button, Caption, Card, CopyButton, IconTile, InfoRow, Screen, SectionLabel } from '@/components/ui';
-import { ACTION_ICON, deleteHistory, useHistory } from '@/lib/history';
-import { space, type, useTheme } from '@/lib/theme';
+import { Badge, Button, Caption, Card, CopyButton, GroupLabel, IconTile, InfoRow, Screen, Spacer } from '@/components/ui';
+import { ACTION_ICON, dayLabel, deleteHistory, useHistory, type HistoryAction } from '@/lib/history';
+import { radius, space, type, useTheme } from '@/lib/theme';
+
+const ACTION_LABEL: Record<HistoryAction, string> = {
+  read: 'Read',
+  write: 'Written',
+  erase: 'Erased',
+  lock: 'Locked',
+  unlock: 'Unlocked',
+  secure: 'Secured',
+  unsecure: 'Unlocked',
+  diagnose: 'Diagnosed',
+};
 
 export default function HistoryEntryScreen() {
   const t = useTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const entry = useHistory().find((e) => e.id === id);
+  const [deleting, setDeleting] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   if (!entry) {
     return (
-      <Screen title="History">
-        <Card>
-          <Caption center>This entry was deleted.</Caption>
-        </Card>
+      <Screen title="Entry details">
+        <Spacer />
+        <Lead title="This entry was deleted" body="It’s no longer in history on this phone." />
+        <Spacer />
       </Screen>
     );
   }
 
   const rewrite = entry.rewrite;
-  const remove = () =>
-    Alert.alert('Delete this entry?', 'It’s removed from history on this phone. The tag isn’t changed.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => {
-          router.back();
-          deleteHistory(entry.id);
-        },
-      },
-    ]);
+  const records = entry.records ?? [];
+  const link = records.find((r) => r.url)?.url;
+  const copyText = records.length > 0 ? records.map((r) => r.value).join('\n') : (entry.uid ?? entry.subtitle);
+
+  const copy = async () => {
+    await Clipboard.setStringAsync(copyText);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
 
   const open = async (url: string) => {
     try {
@@ -45,28 +58,40 @@ export default function HistoryEntryScreen() {
 
   return (
     <Screen
-      title="Entry"
+      title="Entry details"
+      gap={14}
       footer={
         <>
           {rewrite ? (
             <Button
               label="Write this again"
-              icon="nfc"
+              icon="pencil"
               onPress={() => router.push({ pathname: '/write/[kind]', params: { kind: rewrite.kind, prefill: JSON.stringify(rewrite.form) } })}
             />
           ) : null}
-          <Button label="Delete entry" icon="trash" variant="danger" onPress={remove} />
+          <View style={{ flexDirection: 'row', gap: space.md }}>
+            <Button label={copied ? 'Copied' : 'Copy'} icon={copied ? 'check' : 'copy'} size="sm" variant="secondary" flex onPress={copy} />
+            {link ? <Button label="Open link" icon="link" size="sm" variant="secondary" flex onPress={() => open(link)} /> : null}
+          </View>
+          <Button label="Delete entry" icon="trash" size="sm" variant="danger" onPress={() => setDeleting(true)} />
         </>
       }
     >
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+        <Badge tone="violet" icon={ACTION_ICON[entry.action]}>
+          {ACTION_LABEL[entry.action]}
+        </Badge>
+        <Text style={[type.caption, { color: t.inkMuted, flex: 1 }]}>
+          {dayLabel(entry.at)}, {timeOf(entry.at)} · on this phone
+        </Text>
+      </View>
+
       <Card style={{ gap: 18 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
           <IconTile icon={ACTION_ICON[entry.action]} />
           <View style={{ flex: 1 }}>
             <Text style={[type.bodyStrong, { color: t.ink, fontFamily: type.heading.fontFamily, fontSize: 19 }]}>{entry.title}</Text>
-            <Text style={[type.caption, { color: t.inkMuted }]}>
-              {new Date(entry.at).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })}
-            </Text>
+            {entry.chip ? <Text style={[type.caption, { color: t.inkMuted }]}>{entry.chip}</Text> : null}
           </View>
           {entry.ok ? (
             <Badge tone="success" icon="check">
@@ -78,42 +103,44 @@ export default function HistoryEntryScreen() {
             </Badge>
           )}
         </View>
-        {!entry.ok ? <Text style={[type.caption, { color: t.ink }]}>{entry.subtitle}</Text> : null}
-      </Card>
 
-      {entry.uid || entry.chip ? (
-        <Card style={{ paddingVertical: space.xs, gap: 0 }}>
-          {entry.chip ? <InfoRow label="Tag" value={entry.chip} last={!entry.uid} /> : null}
-          {entry.uid ? <InfoRow label="Serial number (UID)" value={entry.uid} monospace copyable last /> : null}
-        </Card>
-      ) : null}
+        {!entry.ok ? (
+          <Text selectable style={[type.caption, { color: t.ink }]}>
+            {entry.subtitle}
+          </Text>
+        ) : null}
 
-      {entry.records && entry.records.length > 0 ? (
-        <>
-          <SectionLabel>{entry.action === 'read' ? 'On the tag' : 'Content'}</SectionLabel>
-          {entry.records.map((record, i) => (
-            <Card key={i}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+        {entry.uid ? (
+          <View style={[styles.uid, { backgroundColor: t.surfaceSunk, boxShadow: t.clayWell }]}>
+            <Text style={[type.micro, { color: t.inkMuted }]}>UID</Text>
+            <Text selectable style={[type.mono, { color: t.ink, flex: 1 }]}>
+              {entry.uid}
+            </Text>
+            <CopyButton value={entry.uid} label="Copy UID" />
+          </View>
+        ) : null}
+
+        {records.length > 0 ? (
+          <View accessibilityLabel={entry.action === 'read' ? 'On the tag' : 'Content'}>
+            {records.map((record, i) => (
+              <View key={i} style={[styles.record, i > 0 && { borderTopColor: t.line, borderTopWidth: 1 }, i === 0 && { paddingTop: 0 }]}>
                 <IconTile icon={recordIcon(record.kind)} size="sm" />
-                <Text style={[type.micro, { color: t.inkMuted, flex: 1 }]}>{record.title}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[type.micro, { color: t.inkMuted }]}>{record.title}</Text>
+                  <Text selectable style={[type.label, { color: t.ink, lineHeight: 22 }]}>
+                    {record.value}
+                  </Text>
+                </View>
                 {record.value ? <CopyButton value={record.value} /> : null}
               </View>
-              <Text selectable style={[type.body, { color: t.ink }]}>
-                {record.value}
-              </Text>
-              {record.url ? (
-                <View style={{ alignItems: 'flex-start' }}>
-                  <Button label="Open" size="sm" variant="secondary" onPress={() => open(record.url!)} />
-                </View>
-              ) : null}
-            </Card>
-          ))}
-        </>
-      ) : null}
+            ))}
+          </View>
+        ) : null}
+      </Card>
 
       {entry.details && entry.details.length > 0 ? (
         <>
-          <SectionLabel>Details</SectionLabel>
+          <GroupLabel>Details</GroupLabel>
           <Card style={{ paddingVertical: space.xs, gap: 0 }}>
             {entry.details.map((d, i) => (
               <InfoRow key={d.label} label={d.label} value={d.value} last={i === entry.details!.length - 1} />
@@ -123,6 +150,24 @@ export default function HistoryEntryScreen() {
       ) : null}
 
       {rewrite?.kind === 'wifi' ? <Caption>Wi-Fi passwords aren’t saved in history, so you’ll enter it again before writing.</Caption> : null}
+
+      <ConfirmSheet
+        visible={deleting}
+        title="Delete this entry?"
+        message="It’s removed from history on this phone. The tag isn’t changed."
+        confirmLabel="Delete entry"
+        onConfirm={() => {
+          setDeleting(false);
+          router.back();
+          deleteHistory(entry.id);
+        }}
+        onCancel={() => setDeleting(false)}
+      />
     </Screen>
   );
 }
+
+const styles = StyleSheet.create({
+  uid: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, paddingLeft: 16, paddingRight: 8, borderRadius: radius.sm },
+  record: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: 10 },
+});

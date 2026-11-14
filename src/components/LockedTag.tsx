@@ -5,9 +5,7 @@ import { parseTagPassword } from '@/lib/chips';
 import { eraseTag, writeRecords, type WriteResult } from '@/lib/nfc';
 import { MIN_PASSPHRASE, writeSecuredCard } from '@/lib/ntag424';
 import { writeRecordsWithPassword } from '@/lib/protect';
-import { space } from '@/lib/theme';
-
-import { Card, Field, Segmented, Toggle } from './ui';
+import { Field, Panel, Segmented, Toggle } from './ui';
 
 export const PASSWORD_RULE = 'Use exactly 4 characters, or 8 hex digits (0–9, A–F).';
 export const PASSPHRASE_RULE = `Use at least ${MIN_PASSPHRASE} characters.`;
@@ -49,7 +47,7 @@ export function writerFor(
 /** "This tag is locked": the password or passphrase to sign in with before writing. */
 export function LockedTagFields({ state, onChange }: { state: LockedTagState; onChange: (next: LockedTagState) => void }) {
   return (
-    <Card style={{ gap: space.lg }}>
+    <Panel>
       <Toggle
         label="This tag is locked"
         description="Sign in with its password or passphrase first"
@@ -65,6 +63,7 @@ export function LockedTagFields({ state, onChange }: { state: LockedTagState; on
             ]}
             value={state.kind}
             onChange={(kind) => onChange({ ...state, kind })}
+            inset={18}
           />
           {state.kind === 'password' ? (
             <Field
@@ -95,6 +94,6 @@ export function LockedTagFields({ state, onChange }: { state: LockedTagState; on
           )}
         </>
       ) : null}
-    </Card>
+    </Panel>
   );
 }

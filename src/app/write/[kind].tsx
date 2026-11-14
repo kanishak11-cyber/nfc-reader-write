@@ -1,19 +1,28 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { Platform } from 'react-native';
+import { Platform, View } from 'react-native';
 
 import { LockedTagFields, useLockedTag, writerFor } from '@/components/LockedTag';
+import { SavedLine, ScanPulse } from '@/components/flow';
 import { NfcStatus } from '@/components/NfcStatus';
 import { ScanSheet } from '@/components/ScanSheet';
-import { Button, Caption, Card, Field, Meter, Notice, Screen, Toggle } from '@/components/ui';
+import { Button, Caption, Field, goHome, Meter, Notice, Panel, Screen, Spacer, Toggle } from '@/components/ui';
 import { HOLD_HINT } from '@/lib/copy';
 import { addHistory, rewriteOf } from '@/lib/history';
 import { buildRecords, EMPTY_FORM, emptyMessage, encodeMessage, normaliseLink, type WriteForm, type WriteKind } from '@/lib/ndef';
 import { cancelScan, type WriteResult } from '@/lib/nfc';
-import { space } from '@/lib/theme';
 import { useNfcAvailability } from '@/lib/useNfcAvailability';
 import { useScanAction } from '@/lib/useScanAction';
 import { WRITE_KINDS } from '@/lib/writeKinds';
+
+/** What the tag does once it holds each kind of content. */
+const WRITTEN_TITLE: Record<WriteKind, string> = {
+  link: 'The tag now opens your link',
+  text: 'The tag now shows your text',
+  phone: 'The tag now calls your number',
+  email: 'The tag now starts your email',
+  wifi: 'The tag now joins your network',
+};
 
 /** Usable NDEF space on the common tag sizes: NTAG213, NTAG215, NTAG216. */
 const TAG_SIZES = [137, 492, 868];
@@ -36,6 +45,8 @@ export default function WriteFormScreen() {
   const { busy, outcome, setOutcome, run } = useScanAction();
   const [form, setForm] = useState<WriteForm>(() => parsePrefill(params.prefill));
   const [lock, setLock] = useLockedTag();
+  /** The last scan, which decides between the form, the written screen and the failed screen. */
+  const [scan, setScan] = useState<{ result: WriteResult | null; error: string | null } | null>(null);
 
   const set = <K extends keyof WriteForm>(key: K) => (value: WriteForm[K]) => {
     setForm((f) => ({ ...f, [key]: value }));
@@ -46,8 +57,11 @@ export default function WriteFormScreen() {
   const size = built.ok ? encodeMessage(built.records).length : null;
   const ready = availability === 'ready';
   const failed = outcome?.tone === 'danger';
+  const written = scan?.result ?? null;
+  const summary = summaryOf(kind, form);
 
   const write = () => {
+    setScan(null);
     if (!built.ok) return setOutcome({ tone: 'danger', title: 'Check the details', message: built.error });
     const writer = writerFor(lock, built.records, emptyMessage());
     if ('error' in writer) return setOutcome({ tone: 'danger', title: 'Check the sign-in details', message: writer.error });
@@ -60,7 +74,8 @@ export default function WriteFormScreen() {
           .join(' '),
       }),
       failTitle: 'Nothing was written',
-      log: (r, error) =>
+      log: (r, error) => {
+        setScan({ result: r, error });
         addHistory({
           action: 'write',
           ok: r !== null,
@@ -69,9 +84,85 @@ export default function WriteFormScreen() {
           records: [{ kind, title: option.title, value: summaryOf(kind, form) }],
           rewrite: rewriteOf(kind, form),
           details: r ? [{ label: 'Size', value: `${r.bytes} bytes${r.capacity ? ` of ${r.capacity}` : ''}` }] : undefined,
-        }),
+        });
+      },
     });
   };
+
+  const backToForm = () => {
+    setScan(null);
+    setOutcome(null);
+  };
+
+  const sheet = (
+    <ScanSheet
+      visible={busy !== null}
+      heading="Write Tag"
+      title="Ready to write"
+      message={HOLD_HINT}
+      notice={<Notice tone="info" title={`Writing ${built.ok ? built.summary : option.title}${size != null ? ` · ${size} bytes` : ''}`} message={summary || undefined} />}
+      onCancel={cancelScan}
+    />
+  );
+
+  if (written) {
+    return (
+      <Screen
+        title="Write Tag"
+        onBack={backToForm}
+        gap={16}
+        footer={
+          <>
+            <Button label="Done" variant="secondary" onPress={goHome} />
+            <Button label="Write another tag" variant="quiet" onPress={backToForm} />
+          </>
+        }
+      >
+        <Spacer />
+        <ScanPulse
+          state="success"
+          title="Tag written"
+          hint={[
+            written.capacity ? `${written.bytes} of ${written.capacity} bytes used` : `${written.bytes} bytes written`,
+            written.formatted ? 'blank tag was formatted first' : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        />
+        <SavedLine />
+        <Spacer />
+        <Notice tone="success" title={WRITTEN_TITLE[kind]} message={summary || undefined} />
+        {sheet}
+      </Screen>
+    );
+  }
+
+  if (scan?.error) {
+    return (
+      <Screen
+        title="Write Tag"
+        onBack={backToForm}
+        footer={
+          <>
+            <Button label="Try again" icon="nfc" onPress={write} loading={busy !== null && Platform.OS === 'ios'} disabled={!ready || busy !== null} />
+            <Button label="Back to editing" variant="quiet" onPress={backToForm} />
+          </>
+        }
+      >
+        <NfcStatus availability={availability} />
+        <Spacer />
+        <ScanPulse state="error" title="Couldn’t write the tag" hint={scan.error} />
+        <Spacer />
+        <Notice
+          tone="danger"
+          title="Nothing was written"
+          message="Saved to history as failed."
+          action={<Button label="Diagnose this tag" size="sm" variant="secondary" onPress={() => router.push('/diagnose')} />}
+        />
+        {sheet}
+      </Screen>
+    );
+  }
 
   return (
     <Screen
@@ -79,7 +170,7 @@ export default function WriteFormScreen() {
       footer={
         <>
           <Button
-            label={failed ? 'Try again' : 'Write to Tag'}
+            label="Write to Tag"
             icon="nfc"
             onPress={write}
             loading={busy !== null && Platform.OS === 'ios'}
@@ -93,25 +184,22 @@ export default function WriteFormScreen() {
 
       <KindFields kind={kind} form={form} set={set} />
 
-      {size != null ? (
-        <Card style={{ gap: space.md }}>
-          <Meter label="Estimated size" value={size} max={TAG_SIZES.find((max) => size <= max) ?? TAG_SIZES[2]} />
-          {size > TAG_SIZES[0] ? <Caption>Too big for small tags like NTAG213 ({TAG_SIZES[0]} bytes). Use an NTAG215 or NTAG216.</Caption> : null}
-        </Card>
-      ) : null}
-
       <LockedTagFields state={lock} onChange={setLock} />
 
-      {outcome ? (
-        <Notice
-          tone={outcome.tone}
-          title={outcome.title}
-          message={outcome.message}
-          action={failed ? <Button label="Diagnose this tag" size="sm" variant="secondary" onPress={() => router.push('/diagnose')} /> : undefined}
-        />
+      {size != null ? (
+        <View style={{ gap: 8 }}>
+          <Meter label="Size on tag" value={size} max={TAG_SIZES.find((max) => size <= max) ?? TAG_SIZES[2]} />
+          <Caption>
+            {size > TAG_SIZES[0]
+              ? `Too big for small tags like NTAG213 (${TAG_SIZES[0]} bytes). Use an NTAG215 or NTAG216.`
+              : 'Checked against your tag before anything is written. Blank tags are formatted first.'}
+          </Caption>
+        </View>
       ) : null}
 
-      <ScanSheet visible={busy !== null} title="Ready to write" message={HOLD_HINT} onCancel={cancelScan} />
+      {failed && outcome ? <Notice tone="danger" title={outcome.title} message={outcome.message} /> : null}
+
+      {sheet}
     </Screen>
   );
 }
@@ -207,9 +295,9 @@ function KindFields({
       return (
         <>
           <Field label="Network name (SSID)" icon="wifi" value={form.ssid} onChangeText={set('ssid')} autoCapitalize="none" autoCorrect={false} />
-          <Card>
+          <Panel>
             <Toggle label="Password protected" description="WPA2 network" value={form.wifiSecured} onChange={set('wifiSecured')} />
-          </Card>
+          </Panel>
           {form.wifiSecured ? (
             <Field
               label="Wi-Fi password"

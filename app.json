@@ -6,7 +6,7 @@
     "scheme": "nfcreaderwrite",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.nfcreaderwrite.app",
@@ -18,7 +18,7 @@
     "android": {
       "package": "com.nfcreaderwrite.app",
       "adaptiveIcon": {
-        "backgroundColor": "#2459E0",
+        "backgroundColor": "#e4defd",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -54,7 +54,7 @@
           "image": "./assets/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#2459E0"
+          "backgroundColor": "#e9e8fd"
         }
       ]
     ],

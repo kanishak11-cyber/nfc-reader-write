@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { gradient, radius, space, type, useTheme, type Theme } from '@/lib/theme';
+import { gradient, mono, radius, space, type, useTheme, type Theme } from '@/lib/theme';
 
 import { Icon, type IconName } from './Icon';
 
@@ -61,6 +61,9 @@ function ClayPressable({
 
 /* Screen ----------------------------------------------------------- */
 
+export const goBack = () => (router.canGoBack() ? router.back() : router.replace('/'));
+export const goHome = () => (router.canGoBack() ? router.dismissAll() : router.replace('/'));
+
 /**
  * A screen on `bg`: header on top, content in a column with section gaps, and an
  * optional footer (the screen's one primary button) pinned to the bottom.
@@ -70,6 +73,8 @@ export function Screen({
   header,
   action,
   footer,
+  onBack,
+  gap = space.xl,
   children,
 }: {
   title?: string;
@@ -77,6 +82,9 @@ export function Screen({
   header?: ReactNode;
   action?: ReactNode;
   footer?: ReactNode;
+  /** Overrides the back button, e.g. to step back inside a multi-step screen. */
+  onBack?: () => void;
+  gap?: number;
   children: ReactNode;
 }) {
   const t = useTheme();
@@ -86,10 +94,11 @@ export function Screen({
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{
+          flexGrow: 1,
           paddingTop: insets.top + space.md,
-          paddingBottom: (footer ? 0 : insets.bottom) + space.xxl,
+          paddingBottom: footer ? space.sm : insets.bottom + space.xxl,
           paddingHorizontal: space.xl,
-          gap: space.xxl,
+          gap,
         }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
@@ -97,7 +106,7 @@ export function Screen({
       >
         {header ?? (
           <View style={styles.screenHeader}>
-            <IconButton icon="back" label="Back" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />
+            <IconButton icon="back" label="Back" onPress={onBack ?? goBack} />
             <Text style={[type.title, styles.screenTitle, { color: t.ink }]} accessibilityRole="header" numberOfLines={1}>
               {title}
             </Text>
@@ -131,6 +140,30 @@ export function AppHeader({ title }: { title: string }) {
 export function Card({ children, style }: { children: ReactNode; style?: ViewStyle }) {
   const t = useTheme();
   return <View style={[styles.card, { backgroundColor: t.surface, boxShadow: t.clayLg }, style]}>{children}</View>;
+}
+
+/** Smaller clay panel for a toggle, a meter or a single line of tag data. */
+export function Panel({ children, style }: { children: ReactNode; style?: ViewStyle }) {
+  const t = useTheme();
+  return <View style={[styles.panel, { backgroundColor: t.surface, boxShadow: t.clayMd }, style]}>{children}</View>;
+}
+
+/** Pushes what follows to the bottom of the screen, as the design's flexible gaps do. */
+export function Spacer() {
+  return <View style={{ flex: 1 }} />;
+}
+
+/** Quiet group heading above a list: "Recent", "Today". */
+export function GroupLabel({ children, right }: { children: string; right?: ReactNode }) {
+  const t = useTheme();
+  return (
+    <View style={styles.groupLabelRow}>
+      <Text style={[type.group, { color: t.inkMuted, flex: 1 }]} accessibilityRole="header">
+        {children}
+      </Text>
+      {right}
+    </View>
+  );
 }
 
 /** Section prompt, e.g. "What do you want to write?" */
@@ -181,14 +214,19 @@ export function Button({
   onPress,
   variant = 'primary',
   icon,
+  iconEnd,
   loading = false,
   disabled = false,
   size = 'md',
+  flex = false,
 }: {
   label: string;
   onPress: () => void;
   variant?: ButtonVariant;
   icon?: IconName;
+  iconEnd?: IconName;
+  /** Share a row equally with sibling buttons. */
+  flex?: boolean;
   loading?: boolean;
   disabled?: boolean;
   size?: 'md' | 'sm';
@@ -214,6 +252,7 @@ export function Button({
         styles.button,
         { height: small ? 46 : 60, paddingHorizontal: small ? 22 : 32, gap: small ? 8 : 12, backgroundColor: c.bg },
         variant === 'primary' ? { experimental_backgroundImage: gradient.button } : null,
+        flex ? { flex: 1, paddingHorizontal: space.md } : null,
       ]}
     >
       {loading ? (
@@ -221,9 +260,10 @@ export function Button({
       ) : (
         <>
           {icon ? <Icon name={icon} size={small ? 20 : 26} strokeWidth={2.4} color={c.fg} /> : null}
-          <Text style={[small ? styles.buttonLabelSm : styles.buttonLabel, { color: c.fg }]} numberOfLines={1}>
+          <Text style={[small ? styles.buttonLabelSm : styles.buttonLabel, { color: c.fg, flexShrink: 1 }]} numberOfLines={1}>
             {label}
           </Text>
+          {iconEnd ? <Icon name={iconEnd} size={20} strokeWidth={2.4} color={c.fg} /> : null}
         </>
       )}
     </ClayPressable>
@@ -265,14 +305,14 @@ export function IconButton({
   );
 }
 
-export function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }) {
+export function CopyButton({ value, label = 'Copy', size = 'sm' }: { value: string; label?: string; size?: 'md' | 'sm' }) {
   const [copied, setCopied] = useState(false);
   return (
     <IconButton
       icon={copied ? 'check' : 'copy'}
       label={copied ? 'Copied' : label}
-      size="sm"
-      accent
+      size={size}
+      accent={size === 'sm'}
       onPress={async () => {
         await Clipboard.setStringAsync(value);
         setCopied(true);
@@ -332,7 +372,7 @@ export function QuickTile({ icon, label, onPress, disabled }: { icon: IconName; 
   return (
     <ClayPressable onPress={onPress} disabled={disabled} shadow={t.clayMd} style={[styles.quick, { backgroundColor: t.surface }]}>
       <Icon name={icon} size={34} strokeWidth={2.2} color={t.violetInk} />
-      <Text style={[type.bodyStrong, { color: t.ink }]}>{label}</Text>
+      <Text style={[type.bodyStrong, { color: t.ink, lineHeight: 22 }]}>{label}</Text>
     </ClayPressable>
   );
 }
@@ -350,6 +390,7 @@ export function OptionRow({
   subtitle?: string;
   onPress?: () => void;
   selected?: boolean;
+  /** Replaces the chevron; a string (e.g. a time) is set as quiet text. */
   end?: ReactNode;
 }) {
   const t = useTheme();
@@ -372,7 +413,11 @@ export function OptionRow({
           </Text>
         ) : null}
       </View>
-      {end ?? (onPress ? <Icon name="chevron" size={22} strokeWidth={2.4} color={t.ink} /> : null)}
+      {typeof end === 'string' ? (
+        <Text style={[type.caption, { color: t.inkMuted }]}>{end}</Text>
+      ) : (
+        end ?? (onPress ? <Icon name="chevron" size={22} strokeWidth={2.4} color={t.ink} /> : null)
+      )}
     </ClayPressable>
   );
 }
@@ -411,7 +456,7 @@ export function Meter({ label, value, max }: { label: string; value: number; max
   return (
     <View style={{ gap: space.sm }} accessible accessibilityLabel={`${label}: ${value} of ${max} bytes`}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-        <Text style={[type.micro, { color: t.ink, fontSize: 13 }]}>{label}</Text>
+        <Text style={[type.micro, { color: t.ink, fontSize: 13, lineHeight: 18, letterSpacing: 0 }]}>{label}</Text>
         <Text style={[type.mono, { color: t.inkMuted, fontSize: 13 }]}>
           {value} / {max} bytes
         </Text>
@@ -423,6 +468,8 @@ export function Meter({ label, value, max }: { label: string; value: number; max
             height: '100%',
             borderRadius: radius.pill,
             backgroundColor: value > max ? t.danger : t.violet500,
+            experimental_backgroundImage: value > max ? undefined : gradient.bar,
+            boxShadow: 'inset 0 2px 3px rgba(255,255,255,0.4)',
           }}
         />
       </View>
@@ -515,8 +562,9 @@ export function Field({
   hint,
   error,
   icon,
+  mono: monospace = false,
   ...input
-}: TextInputProps & { label: string; hint?: string; error?: string | null; icon?: IconName }) {
+}: TextInputProps & { label: string; hint?: string; error?: string | null; icon?: IconName; mono?: boolean }) {
   const t = useTheme();
   const [focused, setFocused] = useState(false);
   return (
@@ -547,7 +595,7 @@ export function Field({
             setFocused(false);
             input.onBlur?.(e);
           }}
-          style={[type.body, styles.input, { color: t.ink, textAlignVertical: input.multiline ? 'top' : 'center' }]}
+          style={[type.body, styles.input, monospace ? mono : null, { color: t.ink, textAlignVertical: input.multiline ? 'top' : 'center' }]}
         />
       </View>
       {error || hint ? (
@@ -565,18 +613,21 @@ export function Segmented<T extends string>({
   options,
   value,
   onChange,
+  inset = space.xl,
 }: {
   options: { value: T; label: string }[];
   value: T;
   onChange: (value: T) => void;
+  /** Side padding of the container it bleeds out of. */
+  inset?: number;
 }) {
   const t = useTheme();
   return (
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
-      style={{ marginHorizontal: -space.xl }}
-      contentContainerStyle={{ gap: space.sm, paddingHorizontal: space.xl, paddingVertical: space.sm }}
+      style={{ marginHorizontal: -inset, flexGrow: 0 }}
+      contentContainerStyle={{ gap: space.sm, paddingHorizontal: inset, paddingVertical: space.sm }}
     >
       {options.map((option) => {
         const selected = option.value === value;
@@ -589,7 +640,7 @@ export function Segmented<T extends string>({
             accessibilityState={{ selected }}
             style={[styles.chip, { backgroundColor: selected ? t.surfaceTint : t.surface, borderColor: selected ? t.violet500 : 'transparent' }]}
           >
-            <Text style={[type.caption, { fontFamily: type.micro.fontFamily, color: selected ? t.violetInk : t.ink }]}>{option.label}</Text>
+            <Text style={[type.label, { color: selected ? t.violetInk : t.ink }]}>{option.label}</Text>
           </ClayPressable>
         );
       })}
@@ -625,7 +676,7 @@ export function Toggle({
         style={[
           styles.toggleTrack,
           value
-            ? { backgroundColor: t.violet500, borderColor: t.violet600, boxShadow: t.clayViolet }
+            ? { backgroundColor: t.violet500, experimental_backgroundImage: gradient.button, borderColor: t.violet600, boxShadow: t.clayViolet }
             : { backgroundColor: t.surfaceSunk, borderColor: t.lineStrong, boxShadow: t.clayWell },
         ]}
       >
@@ -649,13 +700,15 @@ const styles = StyleSheet.create({
   headerSide: { width: 56, alignItems: 'flex-end' },
   appHeader: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   card: { borderRadius: radius.lg, padding: space.xl, gap: space.lg },
+  panel: { borderRadius: radius.md, padding: 18, gap: 18 },
+  groupLabelRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, minHeight: 20 },
   sectionLabelRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   button: { borderRadius: radius.pill, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   buttonLabel: { fontFamily: type.heading.fontFamily, fontSize: 19, letterSpacing: -0.19 },
   buttonLabelSm: { fontFamily: type.heading.fontFamily, fontSize: 16 },
   feature: { flex: 1, minHeight: 176, paddingTop: 22, paddingHorizontal: 20, paddingBottom: 20, borderRadius: radius.lg, gap: 6 },
   featureGo: { position: 'absolute', right: 16, top: 18, width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
-  quick: { flex: 1, minHeight: 104, padding: space.lg, borderRadius: radius.lg, alignItems: 'center', justifyContent: 'center', gap: 10 },
+  quick: { flex: 1, minHeight: 112, padding: space.lg, borderRadius: radius.lg, alignItems: 'center', justifyContent: 'center', gap: 10 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -674,7 +727,7 @@ const styles = StyleSheet.create({
   noticeIcon: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   well: { flexDirection: 'row', gap: 10, paddingHorizontal: 18, borderWidth: 1.5, borderRadius: radius.md },
   input: { flex: 1, paddingVertical: space.md, fontFamily: type.bodyStrong.fontFamily },
-  chip: { height: 46, paddingHorizontal: space.xl, borderRadius: radius.pill, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  chip: { height: 46, paddingHorizontal: space.lg, borderRadius: radius.pill, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
   toggleRow: { flexDirection: 'row', alignItems: 'center', gap: 14, minHeight: 46 },
   toggleTrack: { width: 60, height: 36, borderRadius: radius.pill, borderWidth: 1.5, padding: 3 },
   toggleKnob: { width: 27, height: 27, borderRadius: 14 },

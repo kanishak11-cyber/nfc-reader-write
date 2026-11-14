@@ -1,8 +1,9 @@
 import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { Alert, View } from 'react-native';
+import { View } from 'react-native';
 
-import { Caption, Card, IconButton, OptionRow, Screen, SectionLabel, Segmented } from '@/components/ui';
+import { ConfirmSheet, Lead, timeOf } from '@/components/flow';
+import { Button, GroupLabel, IconButton, IconTile, OptionRow, Screen, Segmented, Spacer } from '@/components/ui';
 import { ACTION_ICON, clearHistory, dayLabel, matchesFilter, useHistory, type HistoryEntry, type HistoryFilter } from '@/lib/history';
 import { space } from '@/lib/theme';
 
@@ -13,11 +14,10 @@ const FILTERS: { value: HistoryFilter; label: string }[] = [
   { value: 'protected', label: 'Protected' },
 ];
 
-const timeOf = (at: number) => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-
 export default function HistoryScreen() {
   const entries = useHistory();
   const [filter, setFilter] = useState<HistoryFilter>('all');
+  const [clearing, setClearing] = useState(false);
 
   const days = useMemo(() => {
     const groups: { label: string; entries: HistoryEntry[] }[] = [];
@@ -30,36 +30,62 @@ export default function HistoryScreen() {
     return groups;
   }, [entries, filter]);
 
-  const confirmClear = () =>
-    Alert.alert('Clear all history?', 'Every entry is deleted from this phone. Your tags aren’t changed. You can’t undo this.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Clear', style: 'destructive', onPress: clearHistory },
-    ]);
+  if (entries.length === 0) {
+    return (
+      <Screen title="History" footer={<Button label="Read a tag" icon="scan" onPress={() => router.push('/read')} />}>
+        <Spacer />
+        <View style={{ alignItems: 'center', gap: space.xxl }}>
+          <IconTile icon="history" size="lg" />
+          <Lead
+            title="Nothing yet"
+            body="Tags you read and write show up here."
+            note="History stays on this phone. Passwords and keys are never saved."
+          />
+        </View>
+        <Spacer />
+      </Screen>
+    );
+  }
 
   return (
-    <Screen title="History" action={entries.length > 0 ? <IconButton icon="trash" label="Clear history" onPress={confirmClear} /> : undefined}>
+    <Screen title="History" gap={space.lg} action={<IconButton icon="trash" label="Clear history" onPress={() => setClearing(true)} />}>
       <Segmented options={FILTERS} value={filter} onChange={setFilter} />
 
       {days.length === 0 ? (
-        <Card>
-          <Caption center>{entries.length === 0 ? 'Nothing yet. Tags you read and write show up here.' : 'Nothing matches this filter.'}</Caption>
-        </Card>
+        <>
+          <Spacer />
+          <Lead title="Nothing here" body="No entries match this filter." />
+          <Spacer />
+        </>
       ) : (
         days.map((day) => (
           <View key={day.label} style={{ gap: space.md }}>
-            <SectionLabel>{day.label}</SectionLabel>
+            <GroupLabel>{day.label}</GroupLabel>
             {day.entries.map((entry) => (
               <OptionRow
                 key={entry.id}
                 icon={ACTION_ICON[entry.action]}
                 title={entry.title}
-                subtitle={`${timeOf(entry.at)} · ${entry.subtitle}`}
+                subtitle={entry.subtitle}
+                end={timeOf(entry.at)}
                 onPress={() => router.push({ pathname: '/history/[id]', params: { id: entry.id } })}
               />
             ))}
           </View>
         ))
       )}
+
+      <ConfirmSheet
+        visible={clearing}
+        title="Clear history?"
+        message={`This removes ${entries.length === 1 ? 'the only entry' : `all ${entries.length} entries`} from this phone and can’t be undone. Your tags don’t change.`}
+        confirmLabel="Clear history"
+        onConfirm={() => {
+          setClearing(false);
+          clearHistory();
+        }}
+        onCancel={() => setClearing(false)}
+      />
     </Screen>
   );
 }

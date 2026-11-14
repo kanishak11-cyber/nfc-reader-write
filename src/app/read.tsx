@@ -1,14 +1,16 @@
 import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, Text, View } from 'react-native';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 
+import { ScanPulse } from '@/components/flow';
+import { Icon } from '@/components/Icon';
 import { NfcStatus } from '@/components/NfcStatus';
 import { RecordCard } from '@/components/RecordCard';
 import { ScanSheet } from '@/components/ScanSheet';
-import { Badge, Button, Caption, Card, CopyButton, IconTile, InfoRow, Meter, Notice, Screen, SectionLabel } from '@/components/ui';
+import { Badge, Button, Card, CopyButton, goHome, GroupLabel, IconTile, InfoRow, Meter, Notice, Screen, Spacer } from '@/components/ui';
 import { HOLD_HINT } from '@/lib/copy';
 import { addHistory, dayLabel, lastSeen, rewriteFromRecord, toHistoryRecords, type HistoryEntry } from '@/lib/history';
-import { decodeRecord, formatUid, toHex } from '@/lib/ndef';
+import { decodeRecord, formatUid, toHex, type DecodedRecord } from '@/lib/ndef';
 import { cancelScan, readTag, type ScanResult } from '@/lib/nfc';
 import { radius, space, type, useTheme } from '@/lib/theme';
 import { useNfcAvailability } from '@/lib/useNfcAvailability';
@@ -24,6 +26,7 @@ const IOS_TECH_NAMES: Record<string, string> = {
 const tagType = (result: ScanResult) => result.tag.type ?? (result.tag.tech ? IOS_TECH_NAMES[result.tag.tech] ?? result.tag.tech : null) ?? 'NFC tag';
 
 export default function ReadScreen() {
+  const t = useTheme();
   const { availability } = useNfcAvailability();
   const { busy, outcome, run } = useScanAction();
   const [result, setResult] = useState<ScanResult | null>(null);
@@ -69,77 +72,119 @@ export default function ReadScreen() {
 
   const failed = outcome?.tone === 'danger';
   const rewrite = saved?.rewrite;
+  const sheet = (
+    <ScanSheet
+      visible={busy !== null}
+      heading="Read Tag"
+      title="Ready to scan"
+      message={HOLD_HINT}
+      notice={<Notice tone="info" title="Reading only" message="Nothing on the tag changes while you read it." />}
+      onCancel={cancelScan}
+    />
+  );
+  const scanButton = (label: string) => (
+    <Button label={label} icon="nfc" onPress={scan} loading={busy !== null && Platform.OS === 'ios'} disabled={!ready || busy !== null} />
+  );
+
+  if (failed && outcome) {
+    return (
+      <Screen
+        title="Read Tag"
+        footer={
+          <>
+            {scanButton('Try again')}
+            <Button label="Back to Home" variant="quiet" onPress={goHome} />
+          </>
+        }
+      >
+        <NfcStatus availability={availability} />
+        <Spacer />
+        <ScanPulse state="error" title={outcome.title} hint={outcome.message} />
+        <Spacer />
+        <Notice
+          tone="danger"
+          title="Nothing was read"
+          message="Thick phone cases and metal surfaces can block NFC."
+          action={<Button label="Diagnose this tag" size="sm" variant="secondary" onPress={() => router.push('/diagnose')} />}
+        />
+        {sheet}
+      </Screen>
+    );
+  }
+
+  if (!result) {
+    return (
+      <Screen title="Read Tag" footer={scanButton('Scan a tag')}>
+        <NfcStatus availability={availability} />
+        <Spacer />
+        <ScanPulse state={busy !== null ? 'scanning' : 'ready'} title="Ready to scan" hint={HOLD_HINT} />
+        <Spacer />
+        <Notice tone="info" title="Reading only" message="Nothing on the tag changes while you read it." />
+        {sheet}
+      </Screen>
+    );
+  }
+
+  const uid = formatUid(result.tag.id ?? result.tag.idm);
+  const copyAll = [tagType(result), uid ? `UID ${uid}` : null, ...records.map((r) => `${r.title}: ${r.value}`)].filter(Boolean).join('\n');
 
   return (
     <Screen
-      title={result ? 'Tag details' : 'Read Tag'}
+      title="Tag details"
+      gap={14}
+      action={<CopyButton value={copyAll} label="Copy all" size="md" />}
       footer={
-        result && !failed ? (
-          <>
-            <Button
-              label="Write to this tag"
-              icon="pencil"
-              onPress={() =>
-                rewrite
-                  ? router.push({ pathname: '/write/[kind]', params: { kind: rewrite.kind, prefill: JSON.stringify(rewrite.form) } })
-                  : router.push('/write')
-              }
-            />
-            <Button label="Scan another tag" variant="secondary" onPress={scan} disabled={!ready || busy !== null} />
-          </>
-        ) : (
+        <>
           <Button
-            label={failed ? 'Try again' : 'Scan a tag'}
+            label="Write to this tag"
             icon="nfc"
-            onPress={scan}
-            loading={busy !== null && Platform.OS === 'ios'}
-            disabled={!ready || busy !== null}
+            onPress={() =>
+              rewrite
+                ? router.push({ pathname: '/write/[kind]', params: { kind: rewrite.kind, prefill: JSON.stringify(rewrite.form) } })
+                : router.push('/write')
+            }
           />
-        )
+          <View style={{ flexDirection: 'row', gap: space.md }}>
+            <Button label="Scan another" icon="scan" size="sm" variant="secondary" flex onPress={scan} disabled={!ready || busy !== null} />
+            <Button label="Diagnose" icon="wrench" size="sm" variant="secondary" flex onPress={() => router.push('/diagnose')} />
+          </View>
+        </>
       }
     >
       <NfcStatus availability={availability} />
 
-      {outcome ? (
+      {outcome ? <Notice tone={outcome.tone} title={outcome.title} message={outcome.message} /> : null}
+
+      {seen ? (
+        <View style={[styles.seen, { backgroundColor: t.surfaceTint }]}>
+          <Icon name="history" size={20} strokeWidth={2.4} color={t.violetInk} />
+          <Text style={[type.caption, { color: t.ink, flex: 1 }]}>
+            <Text style={{ fontFamily: type.group.fontFamily }}>Seen before</Text> · {dayLabel(seen.at).toLowerCase()}, {seen.title.toLowerCase()}
+          </Text>
+        </View>
+      ) : null}
+
+      <TagCard result={result} records={records} />
+
+      {records.length === 0 ? (
         <Notice
-          tone={outcome.tone}
-          title={outcome.title}
-          message={outcome.message}
-          action={failed ? <Button label="Diagnose this tag" size="sm" variant="secondary" onPress={() => router.push('/diagnose')} /> : undefined}
+          tone="info"
+          title={result.ndefSupported ? 'No data on this tag' : 'No readable NDEF data'}
+          message={
+            result.ndefSupported
+              ? 'The tag is blank. Write something to it.'
+              : 'This tag isn’t NDEF formatted, so only its ID and technology can be shown. Writing to it formats it first when this phone can.'
+          }
         />
       ) : null}
 
-      {result && !failed ? (
-        <>
-          <TagCard result={result} />
-          {seen ? <Caption>Seen before: {dayLabel(seen.at).toLowerCase()}, {seen.title.toLowerCase()}.</Caption> : null}
-
-          <SectionLabel>{records.length === 1 ? '1 record' : `${records.length} records`}</SectionLabel>
-          {records.length > 0 ? (
-            records.map((record, i) => <RecordCard key={`${result.scannedAt}-${i}`} record={record} index={i} />)
-          ) : (
-            <Notice
-              tone="info"
-              title={result.ndefSupported ? 'No data on this tag' : 'No readable NDEF data'}
-              message={
-                result.ndefSupported
-                  ? 'The tag is blank. Write something to it.'
-                  : 'This tag isn’t NDEF formatted, so only its ID and technology can be shown. Writing to it formats it first when this phone can.'
-              }
-            />
-          )}
-          <TagDetails result={result} />
-        </>
-      ) : !outcome && ready ? (
-        <Caption center>{HOLD_HINT}</Caption>
-      ) : null}
-
-      <ScanSheet visible={busy !== null} title="Ready to scan" message={HOLD_HINT} onCancel={cancelScan} />
+      <TagDetails result={result} />
+      {sheet}
     </Screen>
   );
 }
 
-function TagCard({ result }: { result: ScanResult }) {
+function TagCard({ result, records }: { result: ScanResult; records: DecodedRecord[] }) {
   const t = useTheme();
   const uid = formatUid(result.tag.id ?? result.tag.idm);
   return (
@@ -165,7 +210,7 @@ function TagCard({ result }: { result: ScanResult }) {
         )}
       </View>
       {uid ? (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, paddingLeft: 16, paddingRight: 8, borderRadius: radius.sm, backgroundColor: t.surfaceSunk, boxShadow: t.clayWell }}>
+        <View style={[styles.uid, { backgroundColor: t.surfaceSunk, boxShadow: t.clayWell }]}>
           <Text style={[type.micro, { color: t.inkMuted }]}>{result.tag.idm ? 'IDm' : 'UID'}</Text>
           <Text selectable style={[type.mono, { color: t.ink, flex: 1 }]}>
             {uid}
@@ -174,6 +219,13 @@ function TagCard({ result }: { result: ScanResult }) {
         </View>
       ) : null}
       {result.ndefSupported && result.capacity ? <Meter label="Memory" value={result.usedBytes} max={result.capacity} /> : null}
+      {records.length > 0 ? (
+        <View accessibilityLabel={records.length === 1 ? '1 record' : `${records.length} records`}>
+          {records.map((record, i) => (
+            <RecordCard key={`${result.scannedAt}-${i}`} record={record} index={i} />
+          ))}
+        </View>
+      ) : null}
     </Card>
   );
 }
@@ -193,7 +245,7 @@ function TagDetails({ result }: { result: ScanResult }) {
   if (rows.length === 0) return null;
   return (
     <>
-      <SectionLabel>Technical details</SectionLabel>
+      <GroupLabel>Technical details</GroupLabel>
       <Card style={{ paddingVertical: space.xs, gap: 0 }}>
         {rows.map((row, i) => (
           <InfoRow key={row.label} {...row} last={i === rows.length - 1} />
@@ -202,3 +254,8 @@ function TagDetails({ result }: { result: ScanResult }) {
     </>
   );
 }
+
+const styles = StyleSheet.create({
+  seen: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, paddingHorizontal: space.lg, borderRadius: radius.md },
+  uid: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, paddingLeft: 16, paddingRight: 8, borderRadius: radius.sm },
+});
