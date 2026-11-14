@@ -83,7 +83,7 @@ The first time, it asks you to sign in to your Apple Developer account (paid mem
 - the App ID for your bundle identifier, with the **NFC Tag Reading** capability enabled
 - the App Store Connect app record
 
-Build numbers increase on their own (`appVersionSource: remote`). When processing finishes (about 10–30 min after upload), add yourself as an internal tester in App Store Connect → TestFlight and install from the TestFlight app.
+The build number comes from `app.json` (`appVersionSource: local`) and matches the Android `versionCode`, so 1.2.3 is build 10203 everywhere. Bump the version before each upload, because TestFlight accepts each build number once. When processing finishes (about 10–30 min after upload), add yourself as an internal tester in App Store Connect → TestFlight and install from the TestFlight app.
 
 > **NFC entitlement:** the app requests only the `TAG` reader-session format (`includeNdefEntitlement: false` in `app.json`). With the iOS 27 SDK, App Store Connect rejects the `NDEF` format (ITMS-90778). The app still reads and writes NDEF, through tag sessions (`requestTechnology`). Don't use `registerTagEvent` on iOS: it starts an NDEF-only session, which needs the rejected format.
 
@@ -104,9 +104,9 @@ npm run release -- patch --dry-run    # preview without changing anything
 A run does the following:
 1. Refuses to start if there are uncommitted changes, or if the tag already exists.
 2. Runs the typecheck and lint.
-3. Writes the new version to `app.json` and `package.json`. It also sets the Android `versionCode` to `major*10000 + minor*100 + patch` (so 1.2.3 becomes 10203), which means each APK installs over the last one.
+3. Writes the new version to `app.json` and `package.json`. It also sets one build number, `major*10000 + minor*100 + patch` (so 1.2.3 becomes 10203), as both the Android `versionCode` and the iOS `buildNumber`. The version and build number are then the same on both platforms, in the git tag and in the APK name, and each release installs over the last one.
 4. Commits `chore(release): vX.Y.Z` and tags `vX.Y.Z`. Nothing is pushed; run `git push --follow-tags` when you're ready.
-5. Starts the iOS production build on EAS with TestFlight auto-submit. EAS raises the iOS build number itself.
+5. Starts the iOS production build on EAS with TestFlight auto-submit, using the version and build number from `app.json`.
 6. Regenerates the Android project, builds the release APK, and saves it as `releases/vX.Y.Z/nfc-read-write-vX.Y.Z-<versionCode>.apk`, printing its SHA-256.
 
 Options: `--ios` / `--android` (build one platform only), `--no-submit`, `--wait` (stay until the EAS build finishes), `--install` (`adb install -r` the APK), `--no-git`, `--allow-dirty`, `--skip-checks`. Run `npm run release -- --help` for details.

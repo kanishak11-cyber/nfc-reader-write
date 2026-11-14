@@ -12,7 +12,8 @@
       "bundleIdentifier": "com.nfcreaderwrite.app",
       "config": {
         "usesNonExemptEncryption": false
-      }
+      },
+      "buildNumber": "10004"
     },
     "android": {
       "package": "com.nfcreaderwrite.app",

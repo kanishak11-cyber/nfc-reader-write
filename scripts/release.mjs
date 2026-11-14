@@ -4,10 +4,11 @@
  *
  *   npm run release -- <major|minor|patch|none> [options]
  *
- * 1. Bumps the version in app.json + package.json, and derives the Android
- *    versionCode from it (major*10000 + minor*100 + patch) so every release
- *    installs over the previous APK. iOS build numbers are auto-incremented by
- *    EAS (eas.json → appVersionSource: remote).
+ * 1. Bumps the version in app.json + package.json, and derives one build number
+ *    from it (major*10000 + minor*100 + patch) for both the Android versionCode
+ *    and the iOS buildNumber, so 1.2.3 is build 10203 on every platform and
+ *    every release installs over the previous one. EAS reads both from app.json
+ *    (eas.json → appVersionSource: local) and never changes them.
  * 2. Runs the typecheck and lint.
  * 3. Commits the bump and tags it vX.Y.Z (no push).
  * 4. Starts the iOS production build on EAS, auto-submitted to TestFlight.
@@ -31,7 +32,9 @@ Usage: npm run release -- <major|minor|patch|none> [options]
 
 Bump:
   major | minor | patch   Bump the version (1.2.3 → 2.0.0 | 1.3.0 | 1.2.4)
-  none                    Rebuild the current version (no commit, no tag)
+  none                    Rebuild the current version (no commit, no tag). TestFlight
+                          accepts each build number once, so only use this for iOS
+                          if the earlier upload of this version failed or was cancelled.
 
 Options:
   --ios           Only build iOS
@@ -182,7 +185,7 @@ const commitAndTag = opts.git && opts.bump !== 'none';
 
 console.log(c.bold(`\n${app.expo.name} release`));
 console.log(`  version      ${current} → ${c.green(version)}${opts.bump === 'none' ? ' (rebuild)' : ''}`);
-console.log(`  versionCode  ${app.expo.android?.versionCode ?? 1} → ${c.green(versionCode)} (Android)`);
+console.log(`  build        ${app.expo.android?.versionCode ?? 1} → ${c.green(versionCode)} (Android versionCode, iOS buildNumber)`);
 console.log(`  iOS          ${opts.ios ? `EAS production build${opts.submit ? ' → TestFlight' : ''}` : 'skipped'}`);
 console.log(`  Android      ${opts.android ? `release APK → releases/${tag}/` : 'skipped'}`);
 console.log(`  git          ${commitAndTag ? `commit + tag ${tag}` : 'no commit/tag'}`);
@@ -213,9 +216,10 @@ if (opts.checks) {
 
 /* Version bump ---------------------------------------------------- */
 
-step(`Set version ${version} (versionCode ${versionCode})`);
+step(`Set version ${version} (build ${versionCode})`);
 app.expo.version = version;
 app.expo.android = { ...app.expo.android, versionCode };
+app.expo.ios = { ...app.expo.ios, buildNumber: String(versionCode) };
 pkg.version = version;
 writeJson(APP_JSON, app);
 writeJson(PKG_JSON, pkg);
