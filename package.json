@@ -1,6 +1,17 @@
 {
   "name": "nfc-reader-write",
   "version": "1.0.1",
+  "description": "Open-source NFC tag reader and writer for iOS and Android, built with Expo and React Native.",
+  "license": "MIT",
+  "author": "Kanishak Chaurasia",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kanishak11-cyber/nfc-reader-write.git"
+  },
+  "homepage": "https://github.com/kanishak11-cyber/nfc-reader-write#readme",
+  "bugs": {
+    "url": "https://github.com/kanishak11-cyber/nfc-reader-write/issues"
+  },
   "main": "expo-router/entry",
   "dependencies": {
     "expo": "~58.0.25",
