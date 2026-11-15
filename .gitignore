@@ -43,8 +43,8 @@ yarn-error.*
 # release artifacts (APKs built by scripts/release.mjs)
 /releases
 
-/docs
-/store
+# /docs
+# /store
 
 # signing keys downloaded with `eas credentials` (used by scripts/release.mjs)
 credentials.json
