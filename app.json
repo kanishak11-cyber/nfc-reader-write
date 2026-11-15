@@ -24,7 +24,11 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 20100
+      "versionCode": 20100,
+      "blockedPermissions": [
+        "android.permission.READ_CONTACTS",
+        "android.permission.WRITE_CONTACTS"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -48,6 +52,12 @@
         }
       ],
       "expo-font",
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "NFC Doctor opens the New Contact form so you can save a contact card read from a tag. It never reads your contacts."
+        }
+      ],
       [
         "expo-splash-screen",
         {

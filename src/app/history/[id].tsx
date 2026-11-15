@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Alert, Linking, StyleSheet, Text, View } from 'react-native';
 
 import { ConfirmSheet, Lead, timeOf } from '@/components/flow';
-import { recordIcon } from '@/components/RecordCard';
+import { recordIcon, SaveContactButton } from '@/components/RecordCard';
 import { Badge, Button, Caption, Card, CopyButton, GroupLabel, IconTile, InfoRow, Screen, Spacer } from '@/components/ui';
 import { ACTION_ICON, dayLabel, deleteHistory, useHistory, type HistoryAction } from '@/lib/history';
 import { radius, space, type, useTheme } from '@/lib/theme';
@@ -130,6 +130,7 @@ export default function HistoryEntryScreen() {
                   <Text selectable style={[type.label, { color: t.ink, lineHeight: 22 }]}>
                     {record.value}
                   </Text>
+                  <SaveContactButton record={record} />
                 </View>
                 {record.value ? <CopyButton value={record.value} /> : null}
               </View>

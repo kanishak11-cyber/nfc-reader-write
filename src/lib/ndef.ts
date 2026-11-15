@@ -1,5 +1,7 @@
 import { Ndef, type NdefRecord } from 'react-native-nfc-manager';
 
+import { contactName, contactPageLink, encodeVcard, parseContactPageLink, parseVcard, VCARD_MIME, type ContactCard } from './vcard';
+
 type Bytes = number[];
 
 /* ------------------------------------------------------------------ */
@@ -122,6 +124,8 @@ export interface DecodedRecord {
   /** Present when the record can be opened with Linking. */
   url?: string;
   children?: DecodedRecord[];
+  /** Present for contact cards, so they can be saved to the phone's contacts. */
+  contact?: ContactCard;
   raw: {
     tnf: string;
     type: string;
@@ -213,8 +217,21 @@ function decodeUriPayload(payload: Bytes): string {
   return prefix + (utf8(rest) ?? latin1(rest));
 }
 
+function describeContact(card: ContactCard): Decoded {
+  const details: Detail[] = [
+    ...card.phones.map((p) => ({ label: card.phones.length > 1 ? `Phone (${p.label})` : 'Phone', value: p.number })),
+    ...card.emails.map((e) => ({ label: 'Email', value: e.address })),
+  ];
+  if (card.organisation) details.push({ label: 'Organisation', value: card.organisation });
+  if (card.jobTitle) details.push({ label: 'Job title', value: card.jobTitle });
+  for (const url of card.urls) details.push({ label: 'Website', value: url });
+  return { kind: 'contact', title: 'Contact', value: contactName(card) || 'Contact card', details, contact: card };
+}
+
 function describeUri(uri: string): Decoded {
   const url = OPENABLE.test(uri) ? uri : undefined;
+  const card = parseContactPageLink(uri);
+  if (card) return { ...describeContact(card), title: 'Contact link', url };
   const lower = uri.toLowerCase();
 
   if (lower.startsWith('tel:')) {
@@ -280,23 +297,9 @@ function decodeMime(mimeType: string, payload: Bytes): Decoded {
     }
   }
 
-  if (type === 'text/vcard' || type === 'text/x-vcard') {
-    const text = utf8(payload) ?? latin1(payload);
-    const field = (name: string) =>
-      text
-        .split(/\r?\n/)
-        .find((line) => line.toUpperCase().startsWith(name))
-        ?.split(':')
-        .slice(1)
-        .join(':');
-    const details: Detail[] = [];
-    const tel = field('TEL');
-    const email = field('EMAIL');
-    const org = field('ORG');
-    if (tel) details.push({ label: 'Phone', value: tel });
-    if (email) details.push({ label: 'Email', value: email });
-    if (org) details.push({ label: 'Organisation', value: org.replace(/;/g, ' ').trim() });
-    return { kind: 'contact', title: 'Contact', value: field('FN') ?? 'Contact card', details };
+  if (type === VCARD_MIME || type === 'text/x-vcard') {
+    const card = parseVcard(utf8(payload) ?? latin1(payload));
+    if (card) return describeContact(card);
   }
 
   const readable = asReadableText(payload);
@@ -406,15 +409,22 @@ function u16(value: number): Bytes {
 /* Encoding for the Write screen                                       */
 /* ------------------------------------------------------------------ */
 
-export type WriteKind = 'text' | 'link' | 'phone' | 'email' | 'wifi';
+export type WriteKind = 'text' | 'link' | 'phone' | 'email' | 'contact' | 'wifi';
 
 export interface WriteForm {
   text: string;
   link: string;
+  /** Also the contact card's number, so a number carries over between the two forms. */
   phone: string;
+  /** Also the contact card's email. */
   email: string;
   emailSubject: string;
   emailBody: string;
+  firstName: string;
+  lastName: string;
+  organisation: string;
+  /** Adds a contact-page link to the contact card, for iPhones. */
+  contactLink: boolean;
   ssid: string;
   wifiPassword: string;
   wifiSecured: boolean;
@@ -427,10 +437,21 @@ export const EMPTY_FORM: WriteForm = {
   email: '',
   emailSubject: '',
   emailBody: '',
+  firstName: '',
+  lastName: '',
+  organisation: '',
+  contactLink: true,
   ssid: '',
   wifiPassword: '',
   wifiSecured: true,
 };
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Keeps the digits, a leading + and the * and # dialers understand. */
+function normalisePhone(input: string): string {
+  return input.replace(/[^\d+*#]/g, '');
+}
 
 export type BuildResult = { ok: true; records: NdefRecord[]; summary: string } | { ok: false; error: string };
 
@@ -456,13 +477,25 @@ export function buildRecords(kind: WriteKind, form: WriteForm): BuildResult {
       return { ok: true, records: [Ndef.uriRecord(url)], summary: 'link' };
     }
     case 'phone': {
-      const number = form.phone.replace(/[^\d+*#]/g, '');
+      const number = normalisePhone(form.phone);
       if (number.replace(/\D/g, '').length < 3) return { ok: false, error: 'Enter a phone number.' };
       return { ok: true, records: [Ndef.uriRecord(`tel:${number}`)], summary: 'phone number' };
     }
+    case 'contact': {
+      const first = form.firstName.trim();
+      const last = form.lastName.trim();
+      const phone = normalisePhone(form.phone);
+      const email = form.email.trim();
+      if (!first && !last) return { ok: false, error: 'Enter a name for the contact.' };
+      if (!phone && !email) return { ok: false, error: 'Enter a phone number or an email address.' };
+      if (phone && phone.replace(/\D/g, '').length < 3) return { ok: false, error: 'That phone number is too short.' };
+      if (email && !EMAIL_PATTERN.test(email)) return { ok: false, error: 'Enter a valid email address.' };
+      const card = contactCardFromForm(form);
+      return { ok: true, records: contactRecords(card, form.contactLink), summary: 'contact card' };
+    }
     case 'email': {
       const address = form.email.trim();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) return { ok: false, error: 'Enter a valid email address.' };
+      if (!EMAIL_PATTERN.test(address)) return { ok: false, error: 'Enter a valid email address.' };
       const params: string[] = [];
       if (form.emailSubject.trim()) params.push(`subject=${encodeURIComponent(form.emailSubject.trim())}`);
       if (form.emailBody.trim()) params.push(`body=${encodeURIComponent(form.emailBody.trim())}`);
@@ -488,6 +521,34 @@ export function buildRecords(kind: WriteKind, form: WriteForm): BuildResult {
       };
     }
   }
+}
+
+/** The card a contact form describes. */
+export function contactCardFromForm(form: WriteForm): ContactCard {
+  const phone = normalisePhone(form.phone);
+  const email = form.email.trim();
+  return {
+    givenName: form.firstName.trim(),
+    familyName: form.lastName.trim(),
+    fullName: [form.firstName.trim(), form.lastName.trim()].filter(Boolean).join(' '),
+    organisation: form.organisation.trim(),
+    jobTitle: '',
+    phones: phone ? [{ number: phone, label: 'mobile' }] : [],
+    emails: email ? [{ address: email, label: 'other' }] : [],
+    urls: [],
+  };
+}
+
+/**
+ * A contact card as NDEF records. Order matters:
+ * - Android dispatches on the first record, so the vCard goes first and Contacts imports it.
+ * - iPhones ignore vCards but act on the first URI record anywhere in the message (Apple's
+ *   "Adding Support for Background Tag Reading"), so `withLink` adds the contact-page link second.
+ */
+function contactRecords(card: ContactCard, withLink: boolean): NdefRecord[] {
+  const vcard = Ndef.record(Ndef.TNF_MIME_MEDIA, VCARD_MIME, [], Ndef.util.stringToBytes(encodeVcard(card)));
+  if (!withLink) return [vcard];
+  return [vcard, Ndef.uriRecord(contactPageLink(card))];
 }
 
 /** A single empty record: the conventional way to "erase" an NDEF tag. */

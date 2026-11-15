@@ -16,7 +16,12 @@ Nothing. NFC Doctor has no accounts, no analytics, no advertising, no crash repo
 ## Permissions
 
 - **NFC.** Used only to talk to the tag you hold against the phone, when you start a read, write, erase, protect or diagnose.
+- **Contacts.** The app never reads your contacts. When you tap **Save to contacts** on a contact card, it opens your phone's own New Contact form, filled in from the tag. Nothing is saved unless you tap Done (iPhone) or Save (Android). On Android the app doesn't request the contacts permission at all; on iPhone, iOS may ask for it the first time.
 - **Internet.** The app makes no network requests itself. When you tap **Open link**, **Call** or a similar button on a tag's record, the link opens in another app (your browser, phone or mail app), whose own privacy policy applies.
+
+## Contact page
+
+A contact card written by the app can include a link to a contact page, so iPhones can save the contact without any app. The page is a static file hosted on GitHub Pages. The contact details are in the part of the link after `#`, which browsers never send to a server: the page reads them and builds the contact in the browser, and nothing is stored anywhere. Like any website, GitHub may log the visit (for example the visitor's IP address) under [GitHub's privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement).
 
 ## Children
 

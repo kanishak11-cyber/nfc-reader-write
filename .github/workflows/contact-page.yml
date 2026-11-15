@@ -1,0 +1,33 @@
+# Publishes web/ to GitHub Pages. The contact page (web/c/) is what iPhones open when they
+# tap a contact-card tag written by the app; see CONTACT_PAGE_URL in src/lib/vcard.ts.
+name: Contact page
+
+on:
+  push:
+    branches: [master]
+    paths: ['web/**', '.github/workflows/contact-page.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deployment
+        uses: actions/deploy-pages@v4

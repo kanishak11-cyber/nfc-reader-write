@@ -9,6 +9,7 @@ import { useSyncExternalStore } from 'react';
 import type { IconName } from '@/components/Icon';
 
 import { EMPTY_FORM, type DecodedRecord, type WriteForm, type WriteKind } from './ndef';
+import type { ContactCard } from './vcard';
 
 export type HistoryAction = 'read' | 'write' | 'erase' | 'lock' | 'unlock' | 'secure' | 'unsecure' | 'diagnose';
 
@@ -17,6 +18,8 @@ export interface HistoryRecord {
   title: string;
   value: string;
   url?: string;
+  /** Contact cards keep their fields, so they can be saved to contacts or written again. */
+  contact?: ContactCard;
 }
 
 export interface HistoryEntry {
@@ -64,7 +67,7 @@ export function matchesFilter(entry: HistoryEntry, filter: HistoryFilter): boole
 
 /** Decoded records as history keeps them: no raw bytes, and no secret details such as Wi-Fi passwords. */
 export function toHistoryRecords(records: DecodedRecord[]): HistoryRecord[] {
-  return records.map((r) => ({ kind: r.kind, title: r.title, value: r.value, url: r.url }));
+  return records.map((r) => ({ kind: r.kind, title: r.title, value: r.value, url: r.url, contact: r.contact }));
 }
 
 /** A write form safe to keep: everything except the Wi-Fi password. */
@@ -86,6 +89,22 @@ export function rewriteFromRecord(record: HistoryRecord | undefined): HistoryEnt
       return { kind: 'email', form: { ...EMPTY_FORM, email: record.value } };
     case 'wifi':
       return { kind: 'wifi', form: { ...EMPTY_FORM, ssid: record.value } };
+    case 'contact': {
+      const card = record.contact;
+      if (!card) return undefined;
+      const hasNameParts = Boolean(card.givenName || card.familyName);
+      return {
+        kind: 'contact',
+        form: {
+          ...EMPTY_FORM,
+          firstName: hasNameParts ? card.givenName : card.fullName,
+          lastName: card.familyName,
+          phone: card.phones[0]?.number ?? '',
+          email: card.emails[0]?.address ?? '',
+          organisation: card.organisation,
+        },
+      };
+    }
     default:
       return undefined;
   }

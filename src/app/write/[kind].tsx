@@ -21,6 +21,7 @@ const WRITTEN_TITLE: Record<WriteKind, string> = {
   text: 'The tag now shows your text',
   phone: 'The tag now calls your number',
   email: 'The tag now starts your email',
+  contact: 'The tag now shares your contact',
   wifi: 'The tag now joins your network',
 };
 
@@ -215,6 +216,10 @@ function summaryOf(kind: WriteKind, form: WriteForm): string {
       return form.phone.trim();
     case 'email':
       return form.email.trim();
+    case 'contact':
+      return [[form.firstName.trim(), form.lastName.trim()].filter(Boolean).join(' '), form.phone.trim() || form.email.trim()]
+        .filter(Boolean)
+        .join(' · ');
     case 'wifi':
       return form.ssid;
   }
@@ -260,17 +265,90 @@ function KindFields({
       );
     case 'phone':
       return (
-        <Field
-          label="Phone number"
-          icon="phone"
-          placeholder="+1 555 123 4567"
-          value={form.phone}
-          onChangeText={set('phone')}
-          keyboardType="phone-pad"
-          inputMode="tel"
-          autoComplete="tel"
-          hint="Tapping the tag offers to call this number."
-        />
+        <>
+          <Field
+            label="Phone number"
+            icon="phone"
+            placeholder="+1 555 123 4567"
+            value={form.phone}
+            onChangeText={set('phone')}
+            keyboardType="phone-pad"
+            inputMode="tel"
+            autoComplete="tel"
+            hint="Tapping the tag offers to call this number."
+          />
+          <Notice
+            tone="info"
+            icon="contact"
+            title="Want people to save this number?"
+            message="Write a contact card instead. It holds your name and number, so anyone who taps the tag can add you to their contacts."
+            action={
+              <Button
+                label="Make a contact card"
+                size="sm"
+                variant="secondary"
+                onPress={() => router.replace({ pathname: '/write/[kind]', params: { kind: 'contact', prefill: JSON.stringify({ phone: form.phone }) } })}
+              />
+            }
+          />
+        </>
+      );
+    case 'contact':
+      return (
+        <>
+          <Field
+            label="First name"
+            icon="user"
+            value={form.firstName}
+            onChangeText={set('firstName')}
+            autoCapitalize="words"
+            autoComplete="given-name"
+          />
+          <Field label="Last name (optional)" value={form.lastName} onChangeText={set('lastName')} autoCapitalize="words" autoComplete="family-name" />
+          <Field
+            label="Phone number"
+            icon="phone"
+            placeholder="+1 555 123 4567"
+            value={form.phone}
+            onChangeText={set('phone')}
+            keyboardType="phone-pad"
+            inputMode="tel"
+            autoComplete="tel"
+            hint="Include the country code so it works for people abroad."
+          />
+          <Field
+            label="Email (optional)"
+            value={form.email}
+            onChangeText={set('email')}
+            keyboardType="email-address"
+            inputMode="email"
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="email"
+          />
+          <Field label="Company (optional)" value={form.organisation} onChangeText={set('organisation')} autoComplete="organization" />
+          <Panel>
+            <Toggle
+              label="Include a link for iPhones"
+              description="iPhones open it to save the contact. Needs an NTAG215 or bigger tag."
+              value={form.contactLink}
+              onChange={set('contactLink')}
+            />
+          </Panel>
+          {form.contactLink ? (
+            <Notice
+              tone="info"
+              title="Works on iPhone and Android"
+              message="Android phones offer to save the contact straight away. iPhones show a notification that opens the contact page, with a Save contact button. Nobody needs an app."
+            />
+          ) : (
+            <Notice
+              tone="warning"
+              title="Android only"
+              message="Android phones offer to save the contact. iPhones can’t open a contact card from a tag without an NFC app."
+            />
+          )}
+        </>
       );
     case 'email':
       return (

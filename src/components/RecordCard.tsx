@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { DecodedRecord, RecordKind } from '@/lib/ndef';
+import { saveToContacts } from '@/lib/saveContact';
 import { radius, space, type, useTheme } from '@/lib/theme';
 
 import { Icon, type IconName } from './Icon';
@@ -15,7 +16,7 @@ const KIND_ICON: Partial<Record<RecordKind, IconName>> = {
   phone: 'phone',
   sms: 'phone',
   email: 'user',
-  contact: 'user',
+  contact: 'contact',
   wifi: 'wifi',
 };
 
@@ -28,7 +29,7 @@ export function recordIcon(kind: string): IconName {
  * line. Tapping the row opens the rest — the full value, its details, what it opens and the
  * raw bytes.
  */
-export function RecordCard({ record, index }: { record: DecodedRecord; index: number }) {
+export function RecordCard({ record, index, canSave = true }: { record: DecodedRecord; index: number; canSave?: boolean }) {
   const t = useTheme();
   const [expanded, setExpanded] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
@@ -72,6 +73,8 @@ export function RecordCard({ record, index }: { record: DecodedRecord; index: nu
         {hasValue ? <CopyButton value={record.value} /> : null}
       </View>
 
+      {record.contact && canSave ? <SaveContactButton record={record} /> : null}
+
       {expanded ? (
         <View style={{ gap: space.md, paddingTop: space.md }}>
           <Text selectable style={[type.body, { color: record.kind === 'empty' ? t.inkMuted : t.ink }]}>
@@ -80,8 +83,8 @@ export function RecordCard({ record, index }: { record: DecodedRecord; index: nu
 
           {record.details.length > 0 ? (
             <View style={{ gap: space.xs }}>
-              {record.details.map((d) => (
-                <View key={d.label} style={styles.detail}>
+              {record.details.map((d, i) => (
+                <View key={`${d.label}-${i}`} style={styles.detail}>
                   <Text style={[type.caption, { color: t.inkMuted, width: 96 }]}>{d.label}</Text>
                   {d.secret && !revealed[d.label] ? (
                     <Pressable onPress={() => setRevealed((r) => ({ ...r, [d.label]: true }))} hitSlop={8} accessibilityRole="button">
@@ -132,6 +135,34 @@ export function RecordCard({ record, index }: { record: DecodedRecord; index: nu
           ) : null}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/** The main action for a contact card: the phone's own New contact form, filled in. */
+export function SaveContactButton({ record }: { record: Pick<DecodedRecord, 'contact'> }) {
+  const [saved, setSaved] = useState(false);
+  const [opening, setOpening] = useState(false);
+  if (!record.contact) return null;
+  const card = record.contact;
+
+  const save = async () => {
+    setOpening(true);
+    const created = await saveToContacts(card);
+    setOpening(false);
+    if (created) setSaved(true);
+  };
+
+  return (
+    <View style={{ alignItems: 'flex-start', paddingTop: space.sm }}>
+      <Button
+        label={saved ? 'Saved to contacts' : 'Save to contacts'}
+        icon={saved ? 'check' : 'contact'}
+        size="sm"
+        variant={saved ? 'secondary' : 'primary'}
+        loading={opening}
+        onPress={save}
+      />
     </View>
   );
 }
