@@ -90,25 +90,27 @@ The release APK has the JavaScript bundled in, so it runs without a dev server. 
 `app.json` and `eas.json` point at the maintainer's Expo project and App Store Connect app. To build and publish under your own accounts:
 
 1. Change `ios.bundleIdentifier` and `android.package` in `app.json` to IDs you own, e.g. `com.yourname.nfc`.
-2. Delete `owner` and `extra.eas.projectId` from `app.json`, then run `npx eas-cli@latest init` to link the app to your Expo account.
-3. Delete `submit.production.ios.ascAppId` from `eas.json`. EAS creates your App Store Connect app on the first submit.
+2. Change `ios.appleTeamId` in `app.json` to your Apple team ID (developer.apple.com → Membership).
+3. Delete `owner` and `extra.eas.projectId` from `app.json`, then run `npx eas-cli@latest init` to link the app to your Expo account.
+4. Delete `submit.production.ios.ascAppId` from `eas.json`. EAS creates your App Store Connect app on the first submit.
 
 You don't need any of this for local builds (`npx expo run:android` / `run:ios`, or the APK steps above).
 
-### iOS via TestFlight (EAS)
+### iOS via TestFlight (local Xcode build)
 
-One command builds in the cloud and uploads to App Store Connect:
+One command archives the app with Xcode on your Mac and uploads it to App Store Connect. It uses no EAS build credits:
 
 ```sh
-npx eas-cli@latest build --platform ios --profile production --auto-submit
+npm run release -- none --ios --no-git
 ```
 
-The first time, it asks you to sign in to your Apple Developer account (paid membership required). It then sets up the following automatically:
-- the distribution certificate and provisioning profile
-- the App ID for your bundle identifier, with the **NFC Tag Reading** capability enabled
-- the App Store Connect app record
+You need Xcode, CocoaPods and a paid Apple Developer membership. Before the first build:
+- Sign in to Xcode with your Apple ID (Xcode → Settings → Accounts).
+- Set `ios.appleTeamId` in `app.json` to your team.
 
-The build number comes from `app.json` (`appVersionSource: local`) and matches the Android `versionCode`, so 1.2.3 is build 10203 everywhere. Bump the version before each upload, because TestFlight accepts each build number once. When processing finishes (about 10–30 min after upload), add yourself as an internal tester in App Store Connect → TestFlight and install from the TestFlight app.
+Xcode's automatic signing (`-allowProvisioningUpdates`) then handles the distribution certificate, the provisioning profile, and the **NFC Tag Reading** capability on the App ID. To upload without the Xcode account, set an App Store Connect API key: `ASC_API_KEY_PATH` (the `.p8` file), `ASC_API_KEY_ID` and `ASC_API_ISSUER_ID`. The App Store Connect app record must already exist.
+
+The build number comes from `app.json` and matches the Android `versionCode`, so 1.2.3 is build 10203 everywhere. Bump the version before each upload, because TestFlight accepts each build number once. When processing finishes (about 10–30 min after upload), add yourself as an internal tester in App Store Connect → TestFlight and install from the TestFlight app.
 
 > **NFC entitlement:** the app requests only the `TAG` reader-session format (`includeNdefEntitlement: false` in `app.json`). With the iOS 27 SDK, App Store Connect rejects the `NDEF` format (ITMS-90778). The app still reads and writes NDEF, through tag sessions (`requestTechnology`). Don't use `registerTagEvent` on iOS: it starts an NDEF-only session, which needs the rejected format.
 
@@ -116,30 +118,33 @@ Other profiles in `eas.json`: `development` (dev client) and `preview` (internal
 
 ## Releasing
 
-`scripts/release.mjs` bumps the version, builds the iOS app on EAS (auto-submitted to TestFlight), builds the Android App Bundle (`.aab`) for Google Play on EAS, and builds the Android APK for sideloading:
+`scripts/release.mjs` bumps the version and builds everything on your machine, so it uses no EAS build credits. It builds the Android APK for sideloading and the Android App Bundle (`.aab`) for Google Play with Gradle. It archives the iOS app with Xcode and uploads it to TestFlight:
 
 ```sh
 npm run release:patch                 # 1.0.0 → 1.0.1
 npm run release:minor                 # 1.0.0 → 1.1.0
 npm run release:major                 # 1.0.0 → 2.0.0
 npm run release -- none               # rebuild the current version
-npm run release -- patch --dry-run    # preview without changing anything
+npm run release -- patch --dry-run    # check the setup and preview, without changing anything
 npm run release:patch -- --play       # also submit the .aab to Google Play
 ```
 
+One-time setup:
+- **Android upload key.** The `.aab` must be signed with the Play upload key that EAS created. Download it once into `credentials.json` (this uses no build credits): run `npx eas-cli@latest credentials --platform android`, then choose `production` → `credentials.json: Upload/Download credentials between EAS servers and your local json` → `Download credentials from EAS to credentials.json`. `credentials.json` and the `credentials/` folder are git-ignored. Back them up, because they hold the key and its passwords.
+- **iOS.** Xcode signed in to your Apple team, and `ios.appleTeamId` in `app.json` (see [iOS via TestFlight](#ios-via-testflight-local-xcode-build)).
+- **Tools.** JDK 17 and the Android SDK (`ANDROID_HOME`), plus Xcode and CocoaPods for iOS. `--dry-run` reports anything missing.
+
 A run does the following:
-1. Refuses to start if there are uncommitted changes, or if the tag already exists.
+1. Refuses to start if there are uncommitted changes or the tag already exists, or if the setup above is incomplete.
 2. Runs the typecheck and lint.
 3. Writes the new version to `app.json` and `package.json`. It also sets one build number, `major*10000 + minor*100 + patch` (so 1.2.3 becomes 10203), as both the Android `versionCode` and the iOS `buildNumber`. The version and build number are then the same on both platforms, in the git tag and in the APK name, and each release installs over the last one.
 4. Commits `chore(release): vX.Y.Z` and tags `vX.Y.Z`. Nothing is pushed; run `git push --follow-tags` when you're ready.
-5. Starts the iOS production build on EAS with TestFlight auto-submit, using the version and build number from `app.json`.
-6. Starts the Android production build on EAS: the `.aab` for Google Play, signed with the upload key EAS keeps for you.
-7. Regenerates the Android project and builds the release APK while the `.aab` builds in the cloud.
-8. Downloads the `.aab` when it's ready. Both files land in `releases/vX.Y.Z/` as `nfc-doctor-vX.Y.Z-<versionCode>.aab` and `.apk`, with their SHA-256 printed.
+5. Regenerates the Android project and builds the release APK with Gradle, then the `.aab`, signed with the upload key from `credentials.json`. Both files land in `releases/vX.Y.Z/` as `nfc-doctor-vX.Y.Z-<versionCode>.apk` and `.aab`, with their SHA-256 and the upload key's SHA-1 printed. The SHA-1 should match Play Console → Test and release → App integrity → Upload key certificate.
+6. Regenerates the iOS project, installs the pods, archives the app with `xcodebuild` and uploads it to App Store Connect. The Xcode output goes to `ios/build/archive.log` and `ios/build/upload.log`. If a step fails, the errors are printed.
 
 The `.aab` is what you upload to Google Play; the APK is for sideloading (GitHub releases) and is signed with the debug key, so Play won't take it. Each Play upload needs a new versionCode, so release a new version rather than rebuilding with `none`.
 
-Options: `--ios` / `--android` (build one platform only), `--no-submit` (no TestFlight), `--wait` (stay until the EAS iOS build finishes), `--no-aab` (APK only), `--no-download` (start the `.aab` build without waiting for it; download it from expo.dev later), `--play` (submit the `.aab` to Google Play), `--install` (`adb install -r` the APK), `--no-git`, `--allow-dirty`, `--skip-checks`. Run `npm run release -- --help` for details.
+Options: `--ios` / `--android` (build one platform only), `--no-submit` (export the `.ipa` to `releases/` instead of uploading to TestFlight), `--no-aab` (APK only, no upload key needed), `--play` (submit the local `.aab` to Google Play with `eas submit`, which uses no build credits), `--install` (`adb install -r` the APK), `--no-git`, `--allow-dirty`, `--skip-checks`. Run `npm run release -- --help` for details.
 
 ## Publishing to the App Store and Google Play
 
@@ -147,7 +152,7 @@ Everything the stores ask for is in [`store/`](store/): screenshots, the Play ic
 
 ### Before the first submission
 
-- **Accounts.** An Apple Developer Program membership and a Google Play developer account. Building and submitting through EAS also needs a free Expo account (`npx eas-cli@latest login`).
+- **Accounts.** An Apple Developer Program membership and a Google Play developer account. A free Expo account (`npx eas-cli@latest login`) is needed to download the Android upload key once, and for `--play` submissions.
 - **App IDs are permanent.** Both stores tie the app to `com.nfcreaderwrite.app` (`ios.bundleIdentifier` and `android.package` in `app.json`) for good. The App Store Connect record in `eas.json` already uses it, and sideloaded APKs only update to builds with the same ID. If you want an ID that matches the new name, change it before the first Play upload. On iOS that also means a new App Store Connect app.
 - **Permissions (optional).** Expo's Android template declares a few permissions the app doesn't use. To keep the Play listing to Internet and NFC, add this to `app.json` under `android`:
 
@@ -162,13 +167,7 @@ Everything the stores ask for is in [`store/`](store/): screenshots, the Play ic
 ### App Store
 
 1. **Name the app.** In App Store Connect → your app → App Information, set the name to `NFC Doctor`. App Store names are unique; if it's taken, use `NFC Doctor: Tag Tools`.
-2. **Upload a build.** `npm run release:patch -- --ios`, or directly:
-
-   ```sh
-   npx eas-cli@latest build --platform ios --profile production --auto-submit
-   ```
-
-   Wait for it to finish processing in TestFlight (Apple emails you).
+2. **Upload a build.** `npm run release:patch -- --ios` archives the app with Xcode and uploads it. Wait for it to finish processing in TestFlight (Apple emails you).
 3. **Fill in the version page** from [`store/README.md`](store/README.md):
    - screenshots from `store/ios/iphone-6.9/`
    - subtitle, promotional text, description and keywords
@@ -180,18 +179,12 @@ Everything the stores ask for is in [`store/`](store/): screenshots, the Play ic
 ### Google Play
 
 1. **Create the app.** In Play Console: **Create app**, name `NFC Doctor`, type App, Free.
-2. **Build an Android App Bundle.** Play needs an `.aab` signed with an upload key, not the sideload APK. `npm run release` builds one on EAS and saves it as `releases/vX.Y.Z/nfc-doctor-vX.Y.Z-<versionCode>.aab`. To build only the `.aab`:
-
-   ```sh
-   npx eas-cli@latest build --platform android --profile production
-   ```
-
-   EAS creates and keeps the upload key, and Play App Signing holds the key users' phones see. You can upload the `.aab` by hand in Play Console → Test and release, or let EAS submit it (next steps).
+2. **Build an Android App Bundle.** Play needs an `.aab` signed with an upload key, not the sideload APK. `npm run release:patch -- --android` builds one locally and saves it as `releases/vX.Y.Z/nfc-doctor-vX.Y.Z-<versionCode>.aab`. It's signed with the upload key EAS created, which you download once into `credentials.json` (see [Releasing](#releasing)). Play App Signing holds the key users' phones see. You can upload the `.aab` by hand in Play Console → Test and release, or let EAS submit it (next steps).
 3. **Let EAS submit for you.** Create a Google service account key with access to your Play account ([steps](https://expo.fyi/creating-google-service-account)). Upload it at expo.dev → your project → Credentials → Android → `com.nfcreaderwrite.app` → Service credentials, or with `npx eas-cli@latest credentials --platform android`. Don't commit the JSON key.
-4. **Submit.** Add `--play` to a release (`npm run release:patch -- --play`), or upload the latest build:
+4. **Submit.** Add `--play` to a release (`npm run release:patch -- --play`), or upload a local `.aab`. Submissions don't use build credits:
 
    ```sh
-   npx eas-cli@latest submit --platform android --profile production
+   npx eas-cli@latest submit --platform android --profile production --path releases/vX.Y.Z/nfc-doctor-vX.Y.Z-<versionCode>.aab
    ```
 
    The first submission creates a release on the **internal testing** track. To send builds to another track by default, add this to `submit.production` in `eas.json` (`track` is `internal`, `alpha`, `beta` or `production`):

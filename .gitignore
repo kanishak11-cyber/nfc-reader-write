@@ -45,3 +45,7 @@ yarn-error.*
 
 /docs
 /store
+
+# signing keys downloaded with `eas credentials` (used by scripts/release.mjs)
+credentials.json
+/credentials
