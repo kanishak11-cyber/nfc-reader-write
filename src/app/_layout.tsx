@@ -1,24 +1,26 @@
+import { PlusJakartaSans_500Medium, PlusJakartaSans_700Bold, PlusJakartaSans_800ExtraBold, useFonts } from '@expo-google-fonts/plus-jakarta-sans';
+import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { NativeTabs } from 'expo-router/native-tabs';
+import { useEffect } from 'react';
 
-export default function TabLayout() {
+import { loadHistory } from '@/lib/history';
+import { useTheme } from '@/lib/theme';
+
+export default function RootLayout() {
+  const t = useTheme();
+  const [fontsLoaded, fontError] = useFonts({ PlusJakartaSans_500Medium, PlusJakartaSans_700Bold, PlusJakartaSans_800ExtraBold });
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  // The splash screen stays up until the type is ready; a font error falls back to the system face.
+  if (!fontsLoaded && !fontError) return null;
+
   return (
     <>
-      <StatusBar style="auto" />
-      <NativeTabs>
-        <NativeTabs.Trigger name="index">
-          <NativeTabs.Trigger.Label>Read</NativeTabs.Trigger.Label>
-          <NativeTabs.Trigger.Icon sf="wave.3.right" md="nfc" />
-        </NativeTabs.Trigger>
-        <NativeTabs.Trigger name="write">
-          <NativeTabs.Trigger.Label>Write</NativeTabs.Trigger.Label>
-          <NativeTabs.Trigger.Icon sf="square.and.pencil" md="edit" />
-        </NativeTabs.Trigger>
-        <NativeTabs.Trigger name="diagnose">
-          <NativeTabs.Trigger.Label>Diagnose</NativeTabs.Trigger.Label>
-          <NativeTabs.Trigger.Icon sf="stethoscope" md="troubleshoot" />
-        </NativeTabs.Trigger>
-      </NativeTabs>
+      <StatusBar style="dark" />
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: t.bg } }} />
     </>
   );
 }

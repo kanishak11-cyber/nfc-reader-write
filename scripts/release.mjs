@@ -12,9 +12,11 @@
  * 2. Runs the typecheck and lint.
  * 3. Commits the bump and tags it vX.Y.Z (no push).
  * 4. Starts the iOS production build on EAS, auto-submitted to TestFlight.
- * 5. Builds the Android release APK locally and copies it to releases/vX.Y.Z/.
+ * 5. Starts the Android production build on EAS: the signed .aab for Google Play.
+ * 6. Builds the Android release APK locally (for sideloading) while the .aab builds in the
+ *    cloud, then downloads the .aab. Both land in releases/vX.Y.Z/.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -35,12 +37,17 @@ Bump:
   none                    Rebuild the current version (no commit, no tag). TestFlight
                           accepts each build number once, so only use this for iOS
                           if the earlier upload of this version failed or was cancelled.
+                          Google Play also accepts each versionCode once.
 
 Options:
   --ios           Only build iOS
-  --android       Only build the Android APK
+  --android       Only build Android (the .aab and the APK)
   --no-submit     Build iOS but don't submit it to TestFlight
   --wait          Wait for the EAS iOS build to finish (default: start it and continue)
+  --no-aab        Skip the EAS .aab build (Android: APK only)
+  --no-download   Start the .aab build but don't wait to download it into releases/
+  --play          Submit the .aab to Google Play when it's built (EAS needs your Google
+                  service account key; the track comes from eas.json, internal by default)
   --install       Install the APK on the connected Android device (adb install -r)
   --no-git        Don't commit or tag the version bump
   --allow-dirty   Allow running with uncommitted changes
@@ -98,6 +105,9 @@ function parseArgs(argv) {
     android: true,
     submit: true,
     wait: false,
+    aab: true,
+    download: true,
+    play: false,
     install: false,
     git: true,
     allowDirty: false,
@@ -123,6 +133,15 @@ function parseArgs(argv) {
         break;
       case '--wait':
         opts.wait = true;
+        break;
+      case '--no-aab':
+        opts.aab = false;
+        break;
+      case '--no-download':
+        opts.download = false;
+        break;
+      case '--play':
+        opts.play = true;
         break;
       case '--install':
         opts.install = true;
@@ -151,6 +170,7 @@ function parseArgs(argv) {
   if (!opts.bump) fail(`Choose a version bump: major, minor, patch or none.\n${HELP}`);
   if (!opts.ios && !opts.android) fail('--ios and --android together leave nothing to build; pass neither to build both.');
   if (opts.install && !opts.android) fail('--install needs the Android build.');
+  if (opts.play && (!opts.android || !opts.aab)) fail('--play needs the .aab build.');
   return opts;
 }
 
@@ -173,6 +193,45 @@ function sha256(file) {
   return createHash('sha256').update(readFileSync(file)).digest('hex');
 }
 
+/** Runs a command without blocking, keeping its output to report at the end. */
+function runInBackground(cmd, args) {
+  console.log(c.dim(`  $ ${[cmd, ...args].join(' ')}`));
+  const child = spawn(cmd, args, { cwd: ROOT, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8').on('data', (chunk) => (stdout += chunk));
+  child.stderr.setEncoding('utf8').on('data', (chunk) => (stderr += chunk));
+  return new Promise((resolve) => {
+    child.on('error', (error) => resolve({ status: -1, stdout, stderr: `${stderr}\n${error.message}` }));
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+/** The first build in `eas build --json` output, or null when the output isn't JSON. */
+function easBuild(out) {
+  try {
+    return JSON.parse(out.slice(out.indexOf('[')))[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function buildPage(build) {
+  return `https://expo.dev/accounts/${app.expo.owner}/projects/${app.expo.slug}/builds/${build.id}`;
+}
+
+async function download(url, file) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  writeFileSync(file, Buffer.from(await response.arrayBuffer()));
+}
+
+function describeFile(file) {
+  const mb = (statSync(file).size / 1024 / 1024).toFixed(1);
+  console.log(`  ${path.relative(ROOT, file)} (${mb} MB)`);
+  console.log(`  sha256 ${sha256(file)}`);
+}
+
 /* ----------------------------------------------------------------- */
 
 const opts = parseArgs(process.argv.slice(2));
@@ -182,12 +241,15 @@ const current = app.expo.version;
 const { version, versionCode } = bumpVersion(current, opts.bump);
 const tag = `v${version}`;
 const commitAndTag = opts.git && opts.bump !== 'none';
+const outDir = path.join(RELEASES_DIR, tag);
+const baseName = `${slug(app.expo.name)}-${tag}-${versionCode}`;
 
 console.log(c.bold(`\n${app.expo.name} release`));
 console.log(`  version      ${current} → ${c.green(version)}${opts.bump === 'none' ? ' (rebuild)' : ''}`);
 console.log(`  build        ${app.expo.android?.versionCode ?? 1} → ${c.green(versionCode)} (Android versionCode, iOS buildNumber)`);
 console.log(`  iOS          ${opts.ios ? `EAS production build${opts.submit ? ' → TestFlight' : ''}` : 'skipped'}`);
-console.log(`  Android      ${opts.android ? `release APK → releases/${tag}/` : 'skipped'}`);
+const aabPlan = !opts.aab ? '' : `EAS .aab${opts.play ? ' → Google Play' : ''}${opts.download ? '' : ' (not downloaded)'} + `;
+console.log(`  Android      ${opts.android ? `${aabPlan}release APK → releases/${tag}/` : 'skipped'}`);
 console.log(`  git          ${commitAndTag ? `commit + tag ${tag}` : 'no commit/tag'}`);
 
 /* Pre-flight ------------------------------------------------------ */
@@ -232,7 +294,26 @@ if (commitAndTag) {
   run('git', ['tag', '-a', tag, '-m', tag]);
 }
 
-/* iOS (cloud) ----------------------------------------------------- */
+/* Cloud builds (EAS) ---------------------------------------------- */
+
+// The .aab builds in the cloud while the APK builds here; the script waits for it at the end.
+let aabBuildPage = null;
+let aabPending = null;
+if (opts.android && opts.aab) {
+  step(`Android: EAS production build (.aab)${opts.play ? ' + Google Play submit' : ''}`);
+  const args = ['--yes', 'eas-cli@latest', 'build', '--platform', 'android', '--profile', 'production', '--non-interactive', '--json'];
+  if (opts.play) args.push('--auto-submit');
+  if (opts.download) {
+    aabPending = runInBackground('npx', args);
+    console.log('  building in the cloud; the APK builds meanwhile');
+  } else {
+    const build = easBuild(run('npx', [...args, '--no-wait'], { capture: true }));
+    if (build) {
+      aabBuildPage = buildPage(build);
+      console.log(`  build ${build.appBuildVersion ?? ''} ${build.status?.toLowerCase() ?? ''}: ${aabBuildPage}`);
+    }
+  }
+}
 
 let iosBuildUrl = null;
 if (opts.ios) {
@@ -241,12 +322,11 @@ if (opts.ios) {
   if (opts.submit) args.push('--auto-submit');
   if (!opts.wait) args.push('--no-wait');
   const out = run('npx', args, { capture: true });
-  try {
-    const [build] = JSON.parse(out.slice(out.indexOf('[')));
-    const owner = app.expo.owner;
-    iosBuildUrl = `https://expo.dev/accounts/${owner}/projects/${app.expo.slug}/builds/${build.id}`;
+  const build = easBuild(out);
+  if (build) {
+    iosBuildUrl = buildPage(build);
     console.log(`  build ${build.appBuildVersion ?? ''} ${build.status?.toLowerCase() ?? ''}: ${iosBuildUrl}`);
-  } catch {
+  } else {
     console.log(out.trim());
   }
 }
@@ -264,13 +344,10 @@ if (opts.android) {
   });
   if (!existsSync(APK_BUILT)) fail(`Gradle finished but ${path.relative(ROOT, APK_BUILT)} is missing.`);
 
-  const outDir = path.join(RELEASES_DIR, tag);
   mkdirSync(outDir, { recursive: true });
-  apkPath = path.join(outDir, `${slug(app.expo.name)}-${tag}-${versionCode}.apk`);
+  apkPath = path.join(outDir, `${baseName}.apk`);
   copyFileSync(APK_BUILT, apkPath);
-  const mb = (statSync(apkPath).size / 1024 / 1024).toFixed(1);
-  console.log(`  ${path.relative(ROOT, apkPath)} (${mb} MB)`);
-  console.log(`  sha256 ${sha256(apkPath)}`);
+  describeFile(apkPath);
 
   if (opts.install) {
     step('Android: install on device');
@@ -278,9 +355,36 @@ if (opts.android) {
   }
 }
 
+/* Android .aab (cloud) -------------------------------------------- */
+
+let aabPath = null;
+if (aabPending) {
+  step('Android: wait for the EAS .aab build');
+  const result = await aabPending;
+  const build = easBuild(result.stdout);
+  if (build) aabBuildPage = buildPage(build);
+  if (result.status !== 0 || !build) {
+    console.error(result.stderr.trim().split('\n').slice(-25).join('\n'));
+    fail(`The EAS Android build failed${aabBuildPage ? `: ${aabBuildPage}` : '. See the output above, or the Builds page on expo.dev.'}`);
+  }
+  const url = build.artifacts?.buildUrl ?? build.artifacts?.applicationArchiveUrl;
+  if (!url) fail(`The .aab build finished but has no download link. Get it from ${aabBuildPage}`);
+  mkdirSync(outDir, { recursive: true });
+  aabPath = path.join(outDir, `${baseName}.aab`);
+  try {
+    await download(url, aabPath);
+  } catch (error) {
+    fail(`Couldn't download the .aab (${error.message}). Get it from ${aabBuildPage}`);
+  }
+  describeFile(aabPath);
+}
+
 /* Summary --------------------------------------------------------- */
 
 console.log(`\n${c.green('✔')} ${c.bold(`Released ${tag}`)}`);
+if (aabPath) console.log(`  AAB         ${aabPath}`);
+else if (aabBuildPage) console.log(`  AAB         building on EAS: ${aabBuildPage}`);
+if (aabBuildPage && opts.play) console.log('  Play        submits when the build finishes (track from eas.json)');
 if (apkPath) console.log(`  APK         ${apkPath}`);
 if (iosBuildUrl) {
   console.log(`  iOS build   ${iosBuildUrl}`);

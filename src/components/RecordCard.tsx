@@ -1,13 +1,36 @@
 import { useState } from 'react';
 import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { DecodedRecord } from '@/lib/ndef';
-import { mono, radius, space, useTheme } from '@/lib/theme';
+import type { DecodedRecord, RecordKind } from '@/lib/ndef';
+import { radius, space, type, useTheme } from '@/lib/theme';
 
-import { Button, Card, CopyButton } from './ui';
+import { Icon, type IconName } from './Icon';
+import { Button, CopyButton, IconTile } from './ui';
 
+const KIND_ICON: Partial<Record<RecordKind, IconName>> = {
+  text: 'text',
+  link: 'link',
+  uri: 'link',
+  poster: 'link',
+  phone: 'phone',
+  sms: 'phone',
+  email: 'user',
+  contact: 'user',
+  wifi: 'wifi',
+};
+
+export function recordIcon(kind: string): IconName {
+  return KIND_ICON[kind as RecordKind] ?? 'code';
+}
+
+/**
+ * One record inside the tag card: a small icon tile, the record's type and its value on one
+ * line. Tapping the row opens the rest — the full value, its details, what it opens and the
+ * raw bytes.
+ */
 export function RecordCard({ record, index }: { record: DecodedRecord; index: number }) {
   const t = useTheme();
+  const [expanded, setExpanded] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
 
@@ -16,87 +39,108 @@ export function RecordCard({ record, index }: { record: DecodedRecord; index: nu
     try {
       await Linking.openURL(record.url);
     } catch {
-      Alert.alert('Can’t open', `No app on this device can open:\n${record.url}`);
+      Alert.alert('Can’t open', `No app on this phone can open:\n${record.url}`);
     }
   };
 
   const hasValue = record.kind !== 'empty' && record.value.length > 0;
 
   return (
-    <Card>
+    <View style={[styles.record, index > 0 && { borderTopColor: t.line, borderTopWidth: 1 }, index === 0 && { paddingTop: 0 }]}>
       <View style={styles.header}>
-        <View style={[styles.badge, { backgroundColor: t.accentSoft }]}>
-          <Text style={[styles.badgeText, { color: t.accent }]}>{record.title}</Text>
-        </View>
-        <Text style={[styles.index, { color: t.textSubtle }]}>Record {index + 1}</Text>
+        <Pressable
+          onPress={() => setExpanded((e) => !e)}
+          style={styles.summary}
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          accessibilityLabel={`Record ${index + 1}, ${record.title}: ${record.value}`}
+          accessibilityHint={expanded ? 'Hides the details' : 'Shows the details'}
+        >
+          <IconTile icon={recordIcon(record.kind)} size="sm" />
+          <View style={{ flex: 1 }}>
+            <Text style={[type.micro, { color: t.inkMuted }]} numberOfLines={1}>
+              {record.title}
+            </Text>
+            <Text style={[type.label, { color: record.kind === 'empty' ? t.inkMuted : t.ink, lineHeight: 22 }]} numberOfLines={1}>
+              {record.value}
+            </Text>
+          </View>
+          <View style={{ transform: [{ rotate: expanded ? '90deg' : '0deg' }] }}>
+            <Icon name="chevron" size={20} strokeWidth={2.4} color={t.inkMuted} />
+          </View>
+        </Pressable>
+        {hasValue ? <CopyButton value={record.value} /> : null}
       </View>
 
-      <Text selectable style={[styles.value, { color: record.kind === 'empty' ? t.textMuted : t.text }]}>
-        {record.value}
-      </Text>
+      {expanded ? (
+        <View style={{ gap: space.md, paddingTop: space.md }}>
+          <Text selectable style={[type.body, { color: record.kind === 'empty' ? t.inkMuted : t.ink }]}>
+            {record.value}
+          </Text>
 
-      {record.details.length > 0 ? (
-        <View style={{ gap: space.xs }}>
-          {record.details.map((d) => (
-            <View key={d.label} style={styles.detail}>
-              <Text style={[styles.detailLabel, { color: t.textMuted }]}>{d.label}</Text>
-              {d.secret && !revealed[d.label] ? (
-                <Pressable onPress={() => setRevealed((r) => ({ ...r, [d.label]: true }))} hitSlop={8}>
-                  <Text style={[styles.detailValue, { color: t.accent }]}>Show</Text>
-                </Pressable>
-              ) : (
-                <Text selectable style={[styles.detailValue, { color: t.text }]}>
-                  {d.value}
-                </Text>
-              )}
+          {record.details.length > 0 ? (
+            <View style={{ gap: space.xs }}>
+              {record.details.map((d) => (
+                <View key={d.label} style={styles.detail}>
+                  <Text style={[type.caption, { color: t.inkMuted, width: 96 }]}>{d.label}</Text>
+                  {d.secret && !revealed[d.label] ? (
+                    <Pressable onPress={() => setRevealed((r) => ({ ...r, [d.label]: true }))} hitSlop={8} accessibilityRole="button">
+                      <Text style={[type.caption, { color: t.violetInk, fontFamily: type.micro.fontFamily }]}>Show</Text>
+                    </Pressable>
+                  ) : (
+                    <Text selectable style={[type.caption, { color: t.ink, flex: 1 }]}>
+                      {d.value}
+                    </Text>
+                  )}
+                </View>
+              ))}
             </View>
-          ))}
-        </View>
-      ) : null}
+          ) : null}
 
-      {record.children && record.children.length > 0 ? (
-        <View style={[styles.children, { borderColor: t.border }]}>
-          {record.children.map((child, i) => (
-            <Text key={i} style={[styles.child, { color: t.textMuted }]}>
-              {child.title}: <Text style={{ color: t.text }}>{child.value}</Text>
-            </Text>
-          ))}
-        </View>
-      ) : null}
+          {record.children && record.children.length > 0 ? (
+            <View style={{ gap: 2 }}>
+              {record.children.map((child, i) => (
+                <Text key={i} style={[type.caption, { color: t.inkMuted }]}>
+                  {child.title}: <Text style={{ color: t.ink }}>{child.value}</Text>
+                </Text>
+              ))}
+            </View>
+          ) : null}
 
-      {(record.url || hasValue) && (
-        <View style={styles.actions}>
-          {record.url ? <Button label={openLabel(record)} size="sm" onPress={open} /> : null}
-          {hasValue ? <CopyButton value={record.value} /> : null}
-        </View>
-      )}
+          {record.url ? (
+            <View style={{ alignItems: 'flex-start' }}>
+              <Button label={openLabel(record)} size="sm" variant="secondary" onPress={open} />
+            </View>
+          ) : null}
 
-      <Pressable onPress={() => setShowRaw((s) => !s)} hitSlop={6} accessibilityRole="button">
-        <Text style={[styles.rawToggle, { color: t.textMuted }]}>{showRaw ? 'Hide raw data' : 'Show raw data'}</Text>
-      </Pressable>
+          <Pressable onPress={() => setShowRaw((r) => !r)} hitSlop={6} accessibilityRole="button">
+            <Text style={[type.caption, { color: t.violetInk, fontFamily: type.micro.fontFamily }]}>{showRaw ? 'Hide raw data' : 'Show raw data'}</Text>
+          </Pressable>
 
-      {showRaw ? (
-        <View style={[styles.raw, { backgroundColor: t.surfaceMuted }]}>
-          <RawLine label="TNF" value={record.raw.tnf} />
-          <RawLine label="Type" value={record.raw.type || '—'} />
-          {record.raw.id ? <RawLine label="ID" value={record.raw.id} /> : null}
-          <RawLine label="Payload" value={`${record.raw.size} bytes`} />
-          {record.raw.size > 0 ? (
-            <Text selectable style={[styles.hex, mono, { color: t.text }]}>
-              {record.raw.payloadHex}
-            </Text>
+          {showRaw ? (
+            <View style={[styles.raw, { backgroundColor: t.surfaceSunk, boxShadow: t.clayWell }]}>
+              <RawLine label="TNF" value={record.raw.tnf} />
+              <RawLine label="Type" value={record.raw.type || '—'} />
+              {record.raw.id ? <RawLine label="ID" value={record.raw.id} /> : null}
+              <RawLine label="Payload" value={`${record.raw.size} bytes`} />
+              {record.raw.size > 0 ? (
+                <Text selectable style={[type.mono, { color: t.ink, fontSize: 12, lineHeight: 18, marginTop: 4 }]}>
+                  {record.raw.payloadHex}
+                </Text>
+              ) : null}
+            </View>
           ) : null}
         </View>
       ) : null}
-    </Card>
+    </View>
   );
 }
 
 function RawLine({ label, value }: { label: string; value: string }) {
   const t = useTheme();
   return (
-    <Text style={[styles.rawLine, { color: t.textMuted }]}>
-      {label}: <Text style={[mono, { color: t.text }]}>{value}</Text>
+    <Text style={[type.caption, { color: t.inkMuted }]}>
+      {label}: <Text style={[type.mono, { color: t.ink }]}>{value}</Text>
     </Text>
   );
 }
@@ -117,19 +161,9 @@ function openLabel(record: DecodedRecord): string {
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  badge: { paddingHorizontal: space.sm + 2, paddingVertical: 4, borderRadius: radius.sm, maxWidth: '75%' },
-  badgeText: { fontSize: 13, fontWeight: '700' },
-  index: { fontSize: 13 },
-  value: { fontSize: 18, lineHeight: 25, fontWeight: '500' },
+  record: { paddingVertical: 10 },
+  header: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  summary: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: space.md, minHeight: 44 },
   detail: { flexDirection: 'row', gap: space.md },
-  detailLabel: { fontSize: 14, width: 96 },
-  detailValue: { fontSize: 14, flex: 1 },
-  children: { borderLeftWidth: 2, paddingLeft: space.md, gap: 2 },
-  child: { fontSize: 14 },
-  actions: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
-  rawToggle: { fontSize: 13, fontWeight: '600' },
   raw: { borderRadius: radius.sm, padding: space.md, gap: 4 },
-  rawLine: { fontSize: 13 },
-  hex: { fontSize: 12, lineHeight: 18, marginTop: 4 },
 });

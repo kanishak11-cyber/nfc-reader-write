@@ -42,3 +42,6 @@ yarn-error.*
 
 # release artifacts (APKs built by scripts/release.mjs)
 /releases
+
+/docs
+/store

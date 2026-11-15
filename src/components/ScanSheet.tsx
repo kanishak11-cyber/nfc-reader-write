@@ -1,90 +1,66 @@
-import { useEffect, useState } from 'react';
-import { Animated, Easing, Modal, Platform, StyleSheet, Text, View } from 'react-native';
+import type { ReactNode } from 'react';
+import { Modal, Platform, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { radius, space, useTheme } from '@/lib/theme';
+import { space, type, useTheme } from '@/lib/theme';
 
+import { ScanPulse } from './flow';
 import { Button } from './ui';
 
 /**
- * iOS shows its own system "Ready to Scan" sheet, so this only renders on Android,
- * where the app has to tell the user a scan is waiting and offer a way to cancel.
+ * Full-screen "hold near tag" state: the screen title with no way back, the scan pulse,
+ * one line on what this scan will do, and Cancel. iOS shows its own system scan sheet on
+ * top of everything, so this only renders on Android, where the app has to say a scan is
+ * waiting and offer a way to cancel.
  */
 export function ScanSheet({
   visible,
+  heading,
   title,
   message,
+  notice,
   onCancel,
 }: {
   visible: boolean;
+  /** The screen title, repeated so the scan state reads as part of the same flow. */
+  heading?: string;
   title: string;
   message: string;
+  /** A status banner saying what the scan does. */
+  notice?: ReactNode;
   onCancel: () => void;
 }) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
-  const [pulse] = useState(() => new Animated.Value(0));
-
-  useEffect(() => {
-    if (!visible) return;
-    const loop = Animated.loop(
-      Animated.timing(pulse, { toValue: 1, duration: 1600, easing: Easing.out(Easing.ease), useNativeDriver: true }),
-    );
-    loop.start();
-    return () => {
-      loop.stop();
-      pulse.setValue(0);
-    };
-  }, [visible, pulse]);
 
   if (Platform.OS === 'ios') return null;
 
-  const ring = (delay: number) => ({
-    opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.5 - delay, 0] }),
-    transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [1 + delay, 2 + delay] }) }],
-  });
-
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onCancel} statusBarTranslucent>
-      <View style={[styles.backdrop, { backgroundColor: t.overlay }]}>
-        <View
-          style={[styles.sheet, { backgroundColor: t.surface, paddingBottom: insets.bottom + space.lg }]}
-          accessibilityViewIsModal
-        >
-          <View style={styles.pulseWrap} importantForAccessibility="no-hide-descendants">
-            <Animated.View style={[styles.ring, { borderColor: t.accent }, ring(0)]} />
-            <Animated.View style={[styles.ring, { borderColor: t.accent }, ring(0.3)]} />
-            <View style={[styles.core, { backgroundColor: t.accentSoft }]}>
-              <Text style={[styles.coreText, { color: t.accent }]}>NFC</Text>
-            </View>
+    <Modal visible={visible} animationType="fade" onRequestClose={onCancel} statusBarTranslucent>
+      <View
+        style={[styles.screen, { backgroundColor: t.bg, paddingTop: insets.top + space.md, paddingBottom: insets.bottom + space.lg }]}
+        accessibilityViewIsModal
+      >
+        {heading ? (
+          <View style={styles.header}>
+            <Text style={[type.title, styles.heading, { color: t.ink }]} accessibilityRole="header" numberOfLines={1}>
+              {heading}
+            </Text>
           </View>
-          <Text style={[styles.title, { color: t.text }]} accessibilityRole="header">
-            {title}
-          </Text>
-          <Text style={[styles.message, { color: t.textMuted }]}>{message}</Text>
-          <View style={{ alignSelf: 'stretch', marginTop: space.md }}>
-            <Button label="Cancel" variant="secondary" onPress={onCancel} />
-          </View>
+        ) : null}
+        <View style={styles.center}>
+          <ScanPulse state={visible ? 'scanning' : 'ready'} title={title} hint={message} />
         </View>
+        {notice}
+        <Button label="Cancel" variant="secondary" onPress={onCancel} />
       </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, justifyContent: 'flex-end' },
-  sheet: {
-    borderTopLeftRadius: radius.xl,
-    borderTopRightRadius: radius.xl,
-    paddingTop: space.xxl,
-    paddingHorizontal: space.xl,
-    alignItems: 'center',
-    gap: space.sm,
-  },
-  pulseWrap: { width: 120, height: 120, alignItems: 'center', justifyContent: 'center', marginBottom: space.md },
-  ring: { position: 'absolute', width: 72, height: 72, borderRadius: 36, borderWidth: 2 },
-  core: { width: 72, height: 72, borderRadius: 36, alignItems: 'center', justifyContent: 'center' },
-  coreText: { fontSize: 18, fontWeight: '800', letterSpacing: 1 },
-  title: { fontSize: 22, fontWeight: '700' },
-  message: { fontSize: 15, lineHeight: 21, textAlign: 'center' },
+  screen: { flex: 1, paddingHorizontal: space.xl, gap: space.xl },
+  header: { height: 56, justifyContent: 'center' },
+  heading: { textAlign: 'center', fontSize: 24, lineHeight: 30 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 });
