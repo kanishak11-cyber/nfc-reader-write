@@ -192,7 +192,7 @@ function TagCard({ result, records }: { result: ScanResult; records: DecodedReco
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
         <IconTile icon="nfc" />
         <View style={{ flex: 1 }}>
-          <Text style={[type.bodyStrong, { color: t.ink, fontFamily: type.heading.fontFamily, fontSize: 19 }]} numberOfLines={1}>
+          <Text style={[type.bodyStrong, { color: t.ink, fontFamily: type.heading.fontFamily, fontSize: 19 }]} numberOfLines={2}>
             {tagType(result)}
           </Text>
           <Text style={[type.caption, { color: t.inkMuted }]} numberOfLines={1}>

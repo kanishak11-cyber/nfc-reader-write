@@ -69,7 +69,8 @@ export function ScanPulse({ state = 'ready', title, hint }: { state?: PulseState
         </Text>
       ) : null}
       {hint ? (
-        <Text selectable style={[type.caption, { color: t.inkMuted, textAlign: 'center', maxWidth: 300 }]}>
+        // Only an error is worth copying. Selectable text also takes focus in Android's scan sheet and shows a grey box.
+        <Text selectable={state === 'error'} style={[type.caption, { color: t.inkMuted, textAlign: 'center', maxWidth: 300 }]}>
           {hint}
         </Text>
       ) : null}

@@ -545,7 +545,7 @@ export function Notice({
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={[type.bodyStrong, { color: t.ink, fontSize: 16, lineHeight: 22 }]}>{title}</Text>
         {message ? (
-          <Text selectable style={[type.caption, { color: t.ink }]}>
+          <Text selectable={tone === 'danger'} style={[type.caption, { color: t.ink }]}>
             {message}
           </Text>
         ) : null}

@@ -1,13 +1,17 @@
 """Draws the NFC Doctor app icon set: a white clay NFC tag, violet waves and a medical-cross badge on lavender.
 
-usage: make_icons.py <font.ttf> <out_dir>
+usage: python3 scripts/make-icons.py <PlusJakartaSans_800ExtraBold.ttf> <assets_dir> [store_dir]
+
+With store_dir, also writes the Play Store hi-res icon and feature graphic there.
 """
 import math
+import os
 import sys
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 FONT, OUT = sys.argv[1], sys.argv[2]
+STORE = sys.argv[3] if len(sys.argv) > 3 else None
 S = 1024
 K = 2  # supersampling
 W = S * K
@@ -206,3 +210,22 @@ ImageDraw.Draw(tile_mask).rounded_rectangle([0, 0, W - 1, W - 1], radius=P(230),
 tile = icon.copy()
 tile.putalpha(tile_mask)
 down(tile, 48).save(f'{OUT}/favicon.png')
+
+if STORE:
+    os.makedirs(f'{STORE}/android', exist_ok=True)
+
+    # Play hi-res icon: 512 x 512, 32-bit PNG. Play rounds the corners itself.
+    down(icon, 512).save(f'{STORE}/android/icon-512.png')
+
+    # Play feature graphic: 1024 x 500, no alpha. The mark on the left, name and line on the right.
+    fw, fh = 1024 * K, 500 * K
+    graphic = gradient((fw, fh), [(0, '#f6f4ff'), (0.5, '#e9e8fd'), (1, '#d3cbfa')], 110).convert('RGBA')
+    mark = scaled(art, 0.92).crop(art.getbbox() and scaled(art, 0.92).getbbox())
+    mark = mark.resize((round(mark.width * 0.5), round(mark.height * 0.5)), Image.LANCZOS)
+    graphic.alpha_composite(mark, (P(70), (fh - mark.height) // 2))
+    medium = FONT.replace('800ExtraBold', '500Medium')
+    d = ImageDraw.Draw(graphic)
+    x = P(70) + mark.width + P(56)
+    d.text((x, P(250) - P(8)), 'NFC Doctor', font=ImageFont.truetype(FONT, P(82)), fill=hexrgb('#0b0c3a'), anchor='ls')
+    d.text((x, P(250) + P(50)), 'Read, write and fix NFC tags', font=ImageFont.truetype(medium, P(34)), fill=hexrgb('#45476f'), anchor='ls')
+    graphic.resize((1024, 500), Image.LANCZOS).convert('RGB').save(f'{STORE}/android/feature-graphic.png')
