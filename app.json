@@ -2,7 +2,7 @@
   "expo": {
     "name": "NFC Doctor",
     "slug": "nfc-reader-write",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "scheme": "nfcreaderwrite",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -13,7 +13,7 @@
       "config": {
         "usesNonExemptEncryption": false
       },
-      "buildNumber": "20000"
+      "buildNumber": "20100"
     },
     "android": {
       "package": "com.nfcreaderwrite.app",
@@ -24,7 +24,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 20000
+      "versionCode": 20100
     },
     "web": {
       "favicon": "./assets/favicon.png"
