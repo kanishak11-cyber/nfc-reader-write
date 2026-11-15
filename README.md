@@ -14,8 +14,8 @@ An open-source Expo (React Native) app for iOS and Android that reads and writes
   <img src="docs/screenshots/history.png" width="190" alt="History of reads, writes and locks">
 </p>
 
-- **Read**: the tag's serial number (UID), type, technologies, storage used and capacity, whether it's locked, and every NDEF record, decoded. Supported records are text, links, phone, email, SMS, location, Wi-Fi, contact cards, smart posters, Android app records and raw MIME data. Links can be opened, values copied, and raw bytes shown.
-- **Write**: a link, text, phone number, email, or Wi-Fi network. The app shows the size in bytes before you write, checks it against the tag's capacity, and formats blank tags first: NTAG, MIFARE Ultralight and ISO 15693 (ICODE) tags on iPhone and Android, and MIFARE DESFire EV1+ cards on Android. When a tag can't be written on this phone, the error says why and which phone can handle it. **Erase** writes an empty NDEF message.
+- **Read**: the tag's serial number (UID), type, technologies, storage used and capacity, whether it's locked, and every NDEF record, decoded. Supported records are text, links, phone, email, SMS, location, Wi-Fi, contact cards, smart posters, Android app records and raw MIME data. Links can be opened, values copied, and raw bytes shown. Contact cards (vCard 2.1, 3.0 and 4.0) can be saved with **Save to contacts**, which opens the phone's own New Contact form, filled in.
+- **Write**: a link, text, phone number, email, contact card (vCard), or Wi-Fi network. A contact card holds a name, number and optionally an email and company, so anyone who taps the tag can save it to their contacts, with no app: Android imports the vCard, and iPhones open a [contact page](#contact-page) from a link written next to it. The app shows the size in bytes before you write, checks it against the tag's capacity, and formats blank tags first: NTAG, MIFARE Ultralight and ISO 15693 (ICODE) tags on iPhone and Android, and MIFARE DESFire EV1+ cards on Android. When a tag can't be written on this phone, the error says why and which phone can handle it. **Erase** writes an empty NDEF message.
 - **Tag password**: lock an NTAG21x or MIFARE Ultralight EV1 tag with its built-in 32-bit password so nobody else can overwrite or erase it, and optionally can't read it. Enter the password to write, erase or unlock the tag later. It stops casual tampering; it isn't strong encryption, and a forgotten password can't be recovered.
 - **Secure NTAG 424 DNA cards**: replace the card's factory key with an AES-128 key derived from a passphrase and the card's serial number, and set it so anyone can read but only that key can write. No server and no stored keys: the key is rebuilt from the passphrase each time. Enter the passphrase to write, erase or unlock the card later. SUN dynamic URLs stay off because they need a server to verify.
 - **History**: every read, write, erase, lock and diagnosis is saved on the phone, newest first, with filters. Open an entry to copy its content or write it again. Tag contents are kept; tag passwords, card passphrases, keys and Wi-Fi passwords never are.
@@ -242,8 +242,15 @@ When you're done, uninstall the screenshot build from the simulator and emulator
 |---|---|---|
 | Scan UI | System "Ready to Scan" sheet | In-app sheet with Cancel |
 | Wi-Fi tags | Can write, but iPhones won't join from them | Tapping the tag offers to join |
+| Contact card tags | Tapping opens the contact page, which saves the contact (needs the iPhone link, on by default) | Tapping the tag offers to save the contact |
 | Blank, unformatted tags | Can't format them | Formatted automatically on first write |
 | ATQA/SAK, tech list | Not exposed | Shown |
+
+## Contact page
+
+iPhones don't act on vCard records, only on links. So a contact card written with **Include a link for iPhones** holds two records: the vCard first, which Android dispatches on, then a link to a static page, `web/c/index.html`, which iPhones open. The contact travels in the link's fragment (`#f=Jane&l=Doe&t=+15551234567`), which browsers never send to the server, and the page builds the vCard in the browser for **Save contact**. The two records need an NTAG215 or bigger; without the link a contact fits an NTAG213.
+
+The page is published to GitHub Pages by `.github/workflows/contact-page.yml` on each push to `master` that changes `web/`. Turn it on once under the repo's Settings → Pages → Source: **GitHub Actions**. The app writes links to `CONTACT_PAGE_URL` in `src/lib/vcard.ts`, so forks should point that at their own Pages URL, and changing it later leaves tags already written pointing at the old address.
 
 ## Project layout
 
@@ -259,6 +266,8 @@ src/app/history/           History list and entry details
 src/app/supported.tsx      What this phone supports
 src/lib/nfc.ts             NFC sessions: availability, read, write, erase, errors
 src/lib/ndef.ts            NDEF decode/encode (text, URI, Wi-Fi WSC, vCard, smart poster…)
+src/lib/vcard.ts           vCard parse/encode and the contact-page link
+src/lib/saveContact.ts     Save to contacts (the native New Contact form)
 src/lib/chips.ts           Chip identification, lock/password/permission analysis, NTAG 424 auth (pure, testable)
 src/lib/diagnose.ts        Diagnose sessions: raw NFC-A / ISO-DEP commands, factory-key test
 src/lib/protect.ts         Tag passwords (NTAG21x, Ultralight EV1)
@@ -268,6 +277,7 @@ src/lib/theme.ts           TapClay tokens (Lavender)
 src/components/            UI building blocks, scan states, record rows, Android scan sheet
 store/                     Store screenshots, Play icon, feature graphic, listing text
 scripts/                   Release script, icon generator, simulated NFC for screenshots
+web/c/index.html           The contact page iPhones open from contact-card tags
 ```
 
 ## Scripts

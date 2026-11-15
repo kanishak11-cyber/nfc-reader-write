@@ -13,6 +13,7 @@ import { addHistory, dayLabel, lastSeen, rewriteFromRecord, toHistoryRecords, ty
 import { decodeRecord, formatUid, toHex, type DecodedRecord } from '@/lib/ndef';
 import { cancelScan, readTag, type ScanResult } from '@/lib/nfc';
 import { radius, space, type, useTheme } from '@/lib/theme';
+import { contactName } from '@/lib/vcard';
 import { useNfcAvailability } from '@/lib/useNfcAvailability';
 import { useScanAction } from '@/lib/useScanAction';
 
@@ -184,6 +185,17 @@ export default function ReadScreen() {
   );
 }
 
+/**
+ * True when an earlier record holds the same contact: tags written by this app carry a vCard
+ * and a contact-page link for the same person, and one Save button is enough.
+ */
+function isRepeatContact(records: DecodedRecord[], index: number): boolean {
+  const card = records[index].contact;
+  if (!card) return false;
+  const key = (c: NonNullable<DecodedRecord['contact']>) => `${contactName(c)}|${c.phones[0]?.number ?? ''}|${c.emails[0]?.address ?? ''}`;
+  return records.slice(0, index).some((r) => r.contact && key(r.contact) === key(card));
+}
+
 function TagCard({ result, records }: { result: ScanResult; records: DecodedRecord[] }) {
   const t = useTheme();
   const uid = formatUid(result.tag.id ?? result.tag.idm);
@@ -222,7 +234,7 @@ function TagCard({ result, records }: { result: ScanResult; records: DecodedReco
       {records.length > 0 ? (
         <View accessibilityLabel={records.length === 1 ? '1 record' : `${records.length} records`}>
           {records.map((record, i) => (
-            <RecordCard key={`${result.scannedAt}-${i}`} record={record} index={i} />
+            <RecordCard key={`${result.scannedAt}-${i}`} record={record} index={i} canSave={!isRepeatContact(records, i)} />
           ))}
         </View>
       ) : null}
